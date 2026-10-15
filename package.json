@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "description": "Konfigurierbarer Discord-Moderationsbot",
-  "main": "src/index.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "register": "node src/register-commands.js",
-    "check": "node --check src/index.js && node --check src/register-commands.js"
+    "start": "node index.js",
+    "register": "node register-commands.js",
+    "check": "node --check index.js && node --check register-commands.js"
   },
   "dependencies": {
     "discord.js": "^14.21.0",
