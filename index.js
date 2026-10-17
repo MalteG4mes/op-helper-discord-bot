@@ -1,13 +1,21 @@
 require('dotenv').config();
 const {
   Client, GatewayIntentBits, Events, PermissionFlagsBits,
-  EmbedBuilder, REST, Routes, SlashCommandBuilder
+  EmbedBuilder, REST, Routes, SlashCommandBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle
 } = require('discord.js');
 
 const required = ['DISCORD_TOKEN'];
 for (const key of required) {
   if (!process.env[key]) throw new Error(`${key} fehlt in .env`);
 }
+
+const streamers = [
+  { login: 'misskowalski', displayName: 'MissKowalski' },
+  { login: 'opphorx', displayName: 'Opphil' },
+  { login: 'wuchitv', displayName: 'WuchiTV' },
+  { login: 'ronjawolf2007', displayName: 'RonjaWolf2007' }
+].map(streamer => ({ ...streamer, roleName: `Stream-Ping: ${streamer.displayName}` }));
 
 const config = {
   welcomeChannelId: process.env.WELCOME_CHANNEL_ID,
@@ -19,8 +27,7 @@ const config = {
   streamAlertChannelId: process.env.STREAM_ALERT_CHANNEL_ID,
   twitchClientId: process.env.TWITCH_CLIENT_ID,
   twitchClientSecret: process.env.TWITCH_CLIENT_SECRET,
-  twitchStreamers: (process.env.TWITCH_STREAMERS || '')
-    .split(',').map(name => name.trim()).filter(Boolean),
+  twitchStreamers: streamers.map(streamer => streamer.login),
   streamPollMinutes: Math.max(1, Math.min(Number(process.env.STREAM_POLL_MINUTES) || 5, 60))
 };
 
@@ -53,7 +60,10 @@ const commands = [
     .setName('warn')
     .setDescription('Verwarnt ein Mitglied')
     .addUserOption(option => option.setName('mitglied').setDescription('Mitglied zum Verwarnen').setRequired(true))
-    .addStringOption(option => option.setName('grund').setDescription('Grund für die Verwarnung'))
+    .addStringOption(option => option.setName('grund').setDescription('Grund für die Verwarnung')),
+  new SlashCommandBuilder()
+    .setName('stream-rollen')
+    .setDescription('Erstellt die auswählbaren Streamer-Ping-Rollen')
 ];
 
 const streamerStatus = new Map();
@@ -98,6 +108,8 @@ async function checkTwitchStreams() {
 
       // Beim ersten Check nur den Zustand merken, damit keine alten Streams nachgemeldet werden.
       if (!isLive || previous === undefined || previous) continue;
+      const streamerDetails = streamers.find(item => item.login === key);
+      const role = streamerDetails && channel.guild.roles.cache.find(item => item.name === streamerDetails.roleName);
       const thumbnail = live.thumbnail_url.replace('{width}', '1280').replace('{height}', '720');
       const embed = new EmbedBuilder()
         .setColor(0x9146FF)
@@ -107,7 +119,11 @@ async function checkTwitchStreams() {
         .setImage(`${thumbnail}?t=${Date.now()}`)
         .addFields({ name: 'Kategorie', value: live.game_name || 'Ohne Kategorie', inline: true })
         .setTimestamp();
-      await channel.send({ embeds: [embed] });
+      await channel.send({
+        content: role ? `<@&${role.id}>` : undefined,
+        embeds: [embed],
+        allowedMentions: role ? { roles: [role.id] } : { parse: [] }
+      });
     }
   } catch (error) {
     console.error('Streamer-Benachrichtigung:', error.message);
@@ -124,6 +140,25 @@ async function logModeration(guild, title, fields) {
 
 function canModerate(interaction) {
   return interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers);
+}
+
+async function getOrCreateStreamRole(guild, streamer) {
+  const existing = guild.roles.cache.find(role => role.name === streamer.roleName);
+  if (existing) return existing;
+  return guild.roles.create({
+    name: streamer.roleName,
+    mentionable: false,
+    reason: 'Opt-in-Rolle für Twitch-Streamer-Benachrichtigungen'
+  });
+}
+
+function streamRoleButtons() {
+  return new ActionRowBuilder().addComponents(
+    streamers.map(streamer => new ButtonBuilder()
+      .setCustomId(`stream-role:${streamer.login}`)
+      .setLabel(streamer.displayName)
+      .setStyle(ButtonStyle.Primary))
+  );
 }
 
 client.once(Events.ClientReady, async readyClient => {
@@ -171,7 +206,42 @@ client.on(Events.MessageCreate, async message => {
 });
 
 client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isChatInputCommand() || !interaction.inGuild()) return;
+  if (!interaction.inGuild()) return;
+
+  if (interaction.isButton() && interaction.customId.startsWith('stream-role:')) {
+    const streamer = streamers.find(item => interaction.customId === `stream-role:${item.login}`);
+    if (!streamer) return;
+    const role = interaction.guild.roles.cache.find(item => item.name === streamer.roleName);
+    if (!role) return interaction.reply({ content: 'Die Rolle wurde noch nicht eingerichtet.', ephemeral: true });
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    if (member.roles.cache.has(role.id)) {
+      await member.roles.remove(role);
+      return interaction.reply({ content: `Du bekommst keine Benachrichtigungen mehr für **${streamer.displayName}**.`, ephemeral: true });
+    }
+    await member.roles.add(role);
+    return interaction.reply({ content: `Du wirst jetzt bei Streams von **${streamer.displayName}** benachrichtigt.`, ephemeral: true });
+  }
+
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === 'stream-rollen') {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      return interaction.reply({ content: 'Dafür brauchst du die Berechtigung „Server verwalten“.', ephemeral: true });
+    }
+    try {
+      for (const streamer of streamers) await getOrCreateStreamRole(interaction.guild, streamer);
+      await interaction.channel.send({
+        embeds: [new EmbedBuilder()
+          .setColor(0x9146FF)
+          .setTitle('Streamer-Benachrichtigungen')
+          .setDescription('Klicke auf einen Namen, um die entsprechende Ping-Rolle ein- oder auszuschalten. Du kannst mehrere auswählen.')],
+        components: [streamRoleButtons()]
+      });
+      return interaction.reply({ content: 'Die auswählbaren Streamer-Rollen wurden eingerichtet.', ephemeral: true });
+    } catch (error) {
+      return interaction.reply({ content: `Rollen konnten nicht eingerichtet werden: ${error.message}`, ephemeral: true });
+    }
+  }
+
   if (!canModerate(interaction)) return interaction.reply({ content: 'Dafür fehlt dir die Berechtigung.', ephemeral: true });
   const member = interaction.options.getMember('mitglied');
   const reason = interaction.options.getString('grund') || `Moderation durch ${interaction.user.tag}`;
