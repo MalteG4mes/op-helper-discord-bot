@@ -1,7 +1,7 @@
 require('dotenv').config();
 const {
   Client, GatewayIntentBits, Events, PermissionFlagsBits,
-  EmbedBuilder
+  EmbedBuilder, REST, Routes, SlashCommandBuilder
 } = require('discord.js');
 
 const required = ['DISCORD_TOKEN'];
@@ -15,7 +15,13 @@ const config = {
   bannedTerms: (process.env.BANNED_TERMS || '')
     .split(',').map(term => term.trim().toLowerCase()).filter(Boolean),
   filterAction: process.env.FILTER_ACTION || 'delete',
-  timeoutMinutes: Math.max(1, Math.min(Number(process.env.FILTER_TIMEOUT_MINUTES) || 60, 40320))
+  timeoutMinutes: Math.max(1, Math.min(Number(process.env.FILTER_TIMEOUT_MINUTES) || 60, 40320)),
+  streamAlertChannelId: process.env.STREAM_ALERT_CHANNEL_ID,
+  twitchClientId: process.env.TWITCH_CLIENT_ID,
+  twitchClientSecret: process.env.TWITCH_CLIENT_SECRET,
+  twitchStreamers: (process.env.TWITCH_STREAMERS || '')
+    .split(',').map(name => name.trim()).filter(Boolean),
+  streamPollMinutes: Math.max(1, Math.min(Number(process.env.STREAM_POLL_MINUTES) || 5, 60))
 };
 
 if (!['delete', 'timeout', 'ban'].includes(config.filterAction)) {
@@ -31,6 +37,83 @@ const client = new Client({
   ]
 });
 
+const commands = [
+  new SlashCommandBuilder()
+    .setName('ban')
+    .setDescription('Bannt ein Mitglied')
+    .addUserOption(option => option.setName('mitglied').setDescription('Mitglied zum Bannen').setRequired(true))
+    .addStringOption(option => option.setName('grund').setDescription('Grund für den Bann')),
+  new SlashCommandBuilder()
+    .setName('timeout')
+    .setDescription('Gibt einem Mitglied einen Timeout')
+    .addUserOption(option => option.setName('mitglied').setDescription('Mitglied für den Timeout').setRequired(true))
+    .addIntegerOption(option => option.setName('minuten').setDescription('Dauer in Minuten').setRequired(true).setMinValue(1).setMaxValue(40320))
+    .addStringOption(option => option.setName('grund').setDescription('Grund für den Timeout')),
+  new SlashCommandBuilder()
+    .setName('warn')
+    .setDescription('Verwarnt ein Mitglied')
+    .addUserOption(option => option.setName('mitglied').setDescription('Mitglied zum Verwarnen').setRequired(true))
+    .addStringOption(option => option.setName('grund').setDescription('Grund für die Verwarnung'))
+];
+
+const streamerStatus = new Map();
+let twitchAccessToken;
+let twitchAccessTokenExpiresAt = 0;
+
+async function getTwitchAccessToken() {
+  if (twitchAccessToken && Date.now() < twitchAccessTokenExpiresAt) return twitchAccessToken;
+  const response = await fetch('https://id.twitch.tv/oauth2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: config.twitchClientId,
+      client_secret: config.twitchClientSecret,
+      grant_type: 'client_credentials'
+    })
+  });
+  if (!response.ok) throw new Error(`Twitch-Anmeldung fehlgeschlagen (${response.status})`);
+  const token = await response.json();
+  twitchAccessToken = token.access_token;
+  twitchAccessTokenExpiresAt = Date.now() + Math.max(60, token.expires_in - 60) * 1000;
+  return twitchAccessToken;
+}
+
+async function checkTwitchStreams() {
+  if (!config.streamAlertChannelId || !config.twitchClientId || !config.twitchClientSecret || !config.twitchStreamers.length) return;
+  const channel = await client.channels.fetch(config.streamAlertChannelId).catch(() => null);
+  if (!channel?.isTextBased()) return;
+
+  try {
+    const token = await getTwitchAccessToken();
+    for (const streamer of config.twitchStreamers) {
+      const response = await fetch(`https://api.twitch.tv/helix/streams?user_login=${encodeURIComponent(streamer)}`, {
+        headers: { 'Client-ID': config.twitchClientId, Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error(`Twitch-Abfrage fehlgeschlagen (${response.status})`);
+      const [live] = (await response.json()).data;
+      const key = streamer.toLowerCase();
+      const previous = streamerStatus.get(key);
+      const isLive = Boolean(live);
+      streamerStatus.set(key, isLive);
+
+      // Beim ersten Check nur den Zustand merken, damit keine alten Streams nachgemeldet werden.
+      if (!isLive || previous === undefined || previous) continue;
+      const thumbnail = live.thumbnail_url.replace('{width}', '1280').replace('{height}', '720');
+      const embed = new EmbedBuilder()
+        .setColor(0x9146FF)
+        .setTitle(`${live.user_name} ist jetzt live!`)
+        .setDescription(live.title || 'Schau im Stream vorbei!')
+        .setURL(`https://www.twitch.tv/${live.user_login}`)
+        .setImage(`${thumbnail}?t=${Date.now()}`)
+        .addFields({ name: 'Kategorie', value: live.game_name || 'Ohne Kategorie', inline: true })
+        .setTimestamp();
+      await channel.send({ embeds: [embed] });
+    }
+  } catch (error) {
+    console.error('Streamer-Benachrichtigung:', error.message);
+  }
+}
+
 async function logModeration(guild, title, fields) {
   const channel = await guild.channels.fetch(config.modLogChannelId).catch(() => null);
   if (!channel?.isTextBased()) return;
@@ -43,8 +126,17 @@ function canModerate(interaction) {
   return interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers);
 }
 
-client.once(Events.ClientReady, readyClient => {
+client.once(Events.ClientReady, async readyClient => {
   console.log(`Angemeldet als ${readyClient.user.tag}`);
+  try {
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    await rest.put(Routes.applicationCommands(readyClient.user.id), { body: commands.map(command => command.toJSON()) });
+    console.log('Slash-Befehle registriert. Discord kann bis zu einer Stunde brauchen, bis sie überall sichtbar sind.');
+  } catch (error) {
+    console.error('Slash-Befehle konnten nicht registriert werden:', error.message);
+  }
+  await checkTwitchStreams();
+  setInterval(checkTwitchStreams, config.streamPollMinutes * 60_000);
 });
 
 client.on(Events.GuildMemberAdd, async member => {
