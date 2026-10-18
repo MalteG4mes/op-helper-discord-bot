@@ -201,7 +201,7 @@ function safeTicketText(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 50) || 'anliegen';
 }
 
-function ticketThreadName({ state = 'open', type, ownerId, title }) {
+function ticketThreadName({ state = 'offen', type, ownerId, title }) {
   const prefix = `ticket-${state}-${type}-`;
   const suffix = `-${ownerId}`;
   const available = 100 - prefix.length - suffix.length;
@@ -210,7 +210,7 @@ function ticketThreadName({ state = 'open', type, ownerId, title }) {
 
 function parseTicketThread(channel) {
   if (!channel?.isThread?.()) return null;
-  const match = /^ticket-(open|closed)-(support|feedback|wunsch|meldung|sonstiges)-.+-(\d{17,20})$/.exec(channel.name);
+  const match = /^ticket-(offen|geschlossen)-(support|feedback|wunsch|meldung|sonstiges)-.+-(\d{17,20})$/.exec(channel.name);
   return match && { state: match[1], type: match[2], ownerId: match[3] };
 }
 
@@ -243,7 +243,7 @@ async function getTicketSupportRoleId(thread) {
 
 async function closeTicket(thread, ticket) {
   await thread.setName(ticketThreadName({
-    state: 'closed', type: ticket.type, ownerId: ticket.ownerId, title: thread.name
+    state: 'geschlossen', type: ticket.type, ownerId: ticket.ownerId, title: thread.name
   }));
   await thread.send('🔒 Dieses Ticket ist **geschlossen** und wurde archiviert. Es bleibt für das Team zur Einsicht erhalten.');
   await thread.setLocked(true);
@@ -309,7 +309,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const activeThreads = await ticketChannel.threads.fetchActive();
       const existing = activeThreads.threads.find(thread => {
         const details = parseTicketThread(thread);
-        return details?.ownerId === interaction.user.id && details.state === 'open';
+        return details?.ownerId === interaction.user.id && details.state === 'offen';
       });
       if (existing) return interaction.reply({ content: `Du hast bereits ein offenes Ticket: <#${existing.id}>`, ephemeral: true });
 
@@ -343,7 +343,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
   if (interaction.isButton() && interaction.customId === 'ticket:close') {
     const ticket = parseTicketThread(interaction.channel);
-    if (!ticket || ticket.state !== 'open') return interaction.reply({ content: 'Dieses Ticket ist bereits geschlossen oder ungültig.', ephemeral: true });
+    if (!ticket || ticket.state !== 'offen') return interaction.reply({ content: 'Dieses Ticket ist bereits geschlossen oder ungültig.', ephemeral: true });
     const supportRoleId = interaction.message.mentions.roles.first()?.id;
     if (!canManageTicket(interaction, ticket, supportRoleId)) {
       return interaction.reply({ content: 'Nur die Person, die das Ticket erstellt hat, oder das Support-Team kann es schließen.', ephemeral: true });
@@ -400,7 +400,7 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!canManageTicket(interaction, ticket, supportRoleId)) {
       return interaction.reply({ content: 'Dafür musst du das Ticket erstellt haben oder zum Support-Team gehören.', ephemeral: true });
     }
-    if (ticket.state !== 'open') return interaction.reply({ content: 'Dieses Ticket ist bereits geschlossen.', ephemeral: true });
+    if (ticket.state !== 'offen') return interaction.reply({ content: 'Dieses Ticket ist bereits geschlossen.', ephemeral: true });
 
     try {
       if (subcommand === 'close') {
