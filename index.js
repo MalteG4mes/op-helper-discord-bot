@@ -19,6 +19,7 @@ const streamers = [
 ].map(streamer => ({ ...streamer, roleName: `Stream-Ping: ${streamer.displayName}` }));
 
 const config = {
+  guildId: process.env.GUILD_ID,
   welcomeChannelId: process.env.WELCOME_CHANNEL_ID,
   modLogChannelId: process.env.MOD_LOG_CHANNEL_ID,
   bannedTerms: (process.env.BANNED_TERMS || '')
@@ -301,8 +302,13 @@ client.once(Events.ClientReady, async readyClient => {
   }
   try {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    await rest.put(Routes.applicationCommands(readyClient.user.id), { body: commands.map(command => command.toJSON()) });
-    console.log('Slash-Befehle registriert. Discord kann bis zu einer Stunde brauchen, bis sie überall sichtbar sind.');
+    const route = config.guildId
+      ? Routes.applicationGuildCommands(readyClient.user.id, config.guildId)
+      : Routes.applicationCommands(readyClient.user.id);
+    await rest.put(route, { body: commands.map(command => command.toJSON()) });
+    console.log(config.guildId
+      ? 'Slash-Befehle für diesen Server registriert.'
+      : 'Slash-Befehle registriert. Discord kann bis zu einer Stunde brauchen, bis sie überall sichtbar sind.');
   } catch (error) {
     console.error('Slash-Befehle konnten nicht registriert werden:', error.message);
   }
