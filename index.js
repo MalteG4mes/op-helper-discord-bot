@@ -2,7 +2,8 @@ require('dotenv').config();
 const {
   Client, GatewayIntentBits, Events, PermissionFlagsBits,
   EmbedBuilder, REST, Routes, SlashCommandBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType,
+  StringSelectMenuBuilder
 } = require('discord.js');
 
 const required = ['DISCORD_TOKEN'];
@@ -63,7 +64,12 @@ const commands = [
     .addStringOption(option => option.setName('grund').setDescription('Grund für die Verwarnung')),
   new SlashCommandBuilder()
     .setName('stream-rollen')
-    .setDescription('Erstellt die auswählbaren Streamer-Ping-Rollen')
+    .setDescription('Erstellt die auswählbaren Streamer-Ping-Rollen'),
+  new SlashCommandBuilder()
+    .setName('ticket-setup')
+    .setDescription('Erstellt ein Ticket-Auswahlmenü in diesem Kanal')
+    .addChannelOption(option => option.setName('kategorie').setDescription('Kategorie, in der die Tickets erstellt werden').setRequired(true).addChannelTypes(ChannelType.GuildCategory))
+    .addRoleOption(option => option.setName('supportrolle').setDescription('Rolle, die Tickets bearbeiten darf'))
 ];
 
 const streamerStatus = new Map();
@@ -161,6 +167,33 @@ function streamRoleButtons() {
   );
 }
 
+function ticketPanelComponents(categoryId, supportRoleId) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`ticket:create:${categoryId}:${supportRoleId || 'none'}`)
+      .setPlaceholder('Wähle aus, wofür du ein Ticket brauchst')
+      .addOptions(
+        { label: 'Support', value: 'support', description: 'Frage oder Hilfe zum Server', emoji: '🎫' },
+        { label: 'Meldung', value: 'meldung', description: 'Ein Problem oder Mitglied melden', emoji: '🛡️' },
+        { label: 'Sonstiges', value: 'sonstiges', description: 'Anderes Anliegen', emoji: '💬' }
+      )
+  );
+}
+
+function ticketMetadata(ownerId, supportRoleId, state = 'open') {
+  return `ticket-owner:${ownerId};support:${supportRoleId || 'none'};state:${state}`;
+}
+
+function parseTicketMetadata(topic) {
+  const match = /^ticket-owner:(\d+);support:(\d+|none);state:(open|closed)$/.exec(topic || '');
+  return match && { ownerId: match[1], supportRoleId: match[2], state: match[3] };
+}
+
+function ticketChannelName(user) {
+  const safeName = user.username.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 50);
+  return `ticket-${safeName || user.id}`;
+}
+
 client.once(Events.ClientReady, async readyClient => {
   console.log(`Angemeldet als ${readyClient.user.tag}`);
   try {
@@ -208,6 +241,66 @@ client.on(Events.MessageCreate, async message => {
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.inGuild()) return;
 
+  if (interaction.isStringSelectMenu() && interaction.customId.startsWith('ticket:create:')) {
+    const [, , categoryId, supportRoleId] = interaction.customId.split(':');
+    const existing = interaction.guild.channels.cache.find(channel =>
+      channel.parentId === categoryId && parseTicketMetadata(channel.topic)?.ownerId === interaction.user.id &&
+      parseTicketMetadata(channel.topic)?.state === 'open'
+    );
+    if (existing) return interaction.reply({ content: `Du hast bereits ein offenes Ticket: ${existing}`, ephemeral: true });
+
+    const supportRole = supportRoleId === 'none' ? null : interaction.guild.roles.cache.get(supportRoleId);
+    const ticketType = interaction.values[0] || 'support';
+    try {
+      const overwrites = [
+        { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+        { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels] }
+      ];
+      if (supportRole) overwrites.push({ id: supportRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
+      const ticket = await interaction.guild.channels.create({
+        name: ticketChannelName(interaction.user),
+        type: ChannelType.GuildText,
+        parent: categoryId,
+        topic: ticketMetadata(interaction.user.id, supportRole?.id),
+        permissionOverwrites: overwrites,
+        reason: `Ticket von ${interaction.user.tag}`
+      });
+      const typeLabels = { support: 'Support', meldung: 'Meldung', sonstiges: 'Sonstiges' };
+      await ticket.send({
+        content: `${interaction.user}${supportRole ? ` ${supportRole}` : ''}`,
+        embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(`${typeLabels[ticketType] || 'Support'}-Ticket`)
+          .setDescription('Beschreibe dein Anliegen so genau wie möglich. Ein Teammitglied meldet sich hier.\n\nZum Abschließen klickst du auf den Button unten.')
+          .setTimestamp()],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('ticket:close').setLabel('Ticket schließen').setEmoji('🔒').setStyle(ButtonStyle.Danger)
+        )],
+        allowedMentions: supportRole ? { roles: [supportRole.id], users: [interaction.user.id] } : { users: [interaction.user.id] }
+      });
+      return interaction.reply({ content: `Dein Ticket wurde erstellt: ${ticket}`, ephemeral: true });
+    } catch (error) {
+      return interaction.reply({ content: `Ticket konnte nicht erstellt werden: ${error.message}`, ephemeral: true });
+    }
+  }
+
+  if (interaction.isButton() && interaction.customId === 'ticket:close') {
+    const metadata = parseTicketMetadata(interaction.channel?.topic);
+    if (!metadata || metadata.state !== 'open') return interaction.reply({ content: 'Dieses Ticket ist bereits geschlossen oder ungültig.', ephemeral: true });
+    const isSupport = metadata.supportRoleId !== 'none' && interaction.member.roles?.cache.has(metadata.supportRoleId);
+    if (interaction.user.id !== metadata.ownerId && !isSupport && !interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+      return interaction.reply({ content: 'Nur die Person, die das Ticket erstellt hat, oder das Support-Team kann es schließen.', ephemeral: true });
+    }
+    try {
+      await interaction.channel.permissionOverwrites.edit(metadata.ownerId, { SendMessages: false });
+      await interaction.channel.setName(`geschlossen-${interaction.channel.name.replace(/^ticket-/, '').slice(0, 70)}`);
+      await interaction.channel.setTopic(ticketMetadata(metadata.ownerId, metadata.supportRoleId, 'closed'));
+      await interaction.channel.send('Dieses Ticket wurde geschlossen und bleibt für das Team zur Einsicht erhalten.');
+      return interaction.reply({ content: 'Ticket geschlossen.', ephemeral: true });
+    } catch (error) {
+      return interaction.reply({ content: `Ticket konnte nicht geschlossen werden: ${error.message}`, ephemeral: true });
+    }
+  }
+
   if (interaction.isButton() && interaction.customId.startsWith('stream-role:')) {
     const streamer = streamers.find(item => interaction.customId === `stream-role:${item.login}`);
     if (!streamer) return;
@@ -223,6 +316,24 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === 'ticket-setup') {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      return interaction.reply({ content: 'Dafür brauchst du die Berechtigung „Server verwalten“.', ephemeral: true });
+    }
+    const category = interaction.options.getChannel('kategorie', true);
+    const supportRole = interaction.options.getRole('supportrolle');
+    if (category.type !== ChannelType.GuildCategory) return interaction.reply({ content: 'Bitte wähle eine Kategorie aus.', ephemeral: true });
+    try {
+      await interaction.channel.send({
+        embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Support-Tickets')
+          .setDescription('Wähle unten ein Thema aus. Danach wird für dich ein privater Ticket-Kanal erstellt.')],
+        components: [ticketPanelComponents(category.id, supportRole?.id)]
+      });
+      return interaction.reply({ content: 'Das Ticket-Auswahlmenü wurde erstellt.', ephemeral: true });
+    } catch (error) {
+      return interaction.reply({ content: `Ticket-Menü konnte nicht erstellt werden: ${error.message}`, ephemeral: true });
+    }
+  }
   if (interaction.commandName === 'stream-rollen') {
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
       return interaction.reply({ content: 'Dafür brauchst du die Berechtigung „Server verwalten“.', ephemeral: true });
