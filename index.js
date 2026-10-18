@@ -85,10 +85,15 @@ const commands = [
     .addSubcommand(subcommand => subcommand
       .setName('rename')
       .setDescription('Benennt dieses Ticket um')
-      .addStringOption(option => option.setName('name').setDescription('Kurzer neuer Name für das Ticket').setRequired(true).setMaxLength(50)))
+      .addStringOption(option => option.setName('name').setDescription('Kurzer neuer Name für das Ticket').setRequired(true).setMaxLength(50))),
+  new SlashCommandBuilder()
+    .setName('voice-kick')
+    .setDescription('Entfernt ein Mitglied aus deinem eigenen temporären Voice-Chat')
+    .addUserOption(option => option.setName('mitglied').setDescription('Mitglied, das entfernt werden soll').setRequired(true))
 ];
 
 const streamerStatus = new Map();
+const temporaryVoiceOwners = new Map();
 let twitchAccessToken;
 let twitchAccessTokenExpiresAt = 0;
 
@@ -317,6 +322,7 @@ async function removeEmptyTempVoiceChannel(channel) {
   if (channel.members.size !== 0) return;
   await channel.delete('Temporärer Sprachkanal ist leer').catch(error =>
     console.error('Temporärer Sprachkanal konnte nicht gelöscht werden:', error.message));
+  temporaryVoiceOwners.delete(channel.id);
 }
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
@@ -336,6 +342,11 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       parent: config.tempVoiceCategoryId || lobby.parentId || undefined,
       reason: `Temporärer Talk für ${newState.member.user.tag}`
     });
+    temporaryVoiceOwners.set(room.id, newState.member.id);
+    await room.send?.({
+      embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Dein Voice-Chat')
+        .setDescription(`${newState.member}, du bist der Inhaber dieses temporären Voice-Chats.\n\nUm eine Person zu entfernen, nutze: \`/voice-kick mitglied:@Name\`\nDer Befehl funktioniert nur, solange du selbst in diesem Voice-Chat bist.`)]
+    }).catch(error => console.error('Voice-Chat-Anleitung konnte nicht gesendet werden:', error.message));
     await newState.setChannel(room, 'Eigenen temporären Talk erstellen');
   } catch (error) {
     console.error('Temporärer Sprachkanal konnte nicht erstellt werden:', error.message);
@@ -466,6 +477,27 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === 'voice-kick') {
+    const caller = await interaction.guild.members.fetch(interaction.user.id);
+    const room = caller.voice.channel;
+    const ownerId = room && temporaryVoiceOwners.get(room.id);
+    if (!room || !ownerId || ownerId !== interaction.user.id) {
+      return interaction.reply({ content: 'Diesen Befehl darf nur der Inhaber in seinem eigenen temporären Voice-Chat verwenden.', ephemeral: true });
+    }
+    const member = interaction.options.getMember('mitglied');
+    if (!member || !('voice' in member) || member.voice.channelId !== room.id) {
+      return interaction.reply({ content: 'Dieses Mitglied ist nicht in deinem Voice-Chat.', ephemeral: true });
+    }
+    if (member.id === interaction.user.id) {
+      return interaction.reply({ content: 'Du kannst dich nicht selbst entfernen.', ephemeral: true });
+    }
+    try {
+      await member.voice.disconnect(`Aus temporärem Voice-Chat von ${interaction.user.tag} entfernt`);
+      return interaction.reply({ content: `${member} wurde aus deinem Voice-Chat entfernt.`, ephemeral: true });
+    } catch (error) {
+      return interaction.reply({ content: `Mitglied konnte nicht entfernt werden: ${error.message}`, ephemeral: true });
+    }
+  }
   if (interaction.commandName === 'ticket') {
     const subcommand = interaction.options.getSubcommand();
     const ticket = parseTicketThread(interaction.channel);
