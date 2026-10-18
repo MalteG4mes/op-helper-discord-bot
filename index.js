@@ -29,7 +29,9 @@ const config = {
   twitchClientId: process.env.TWITCH_CLIENT_ID,
   twitchClientSecret: process.env.TWITCH_CLIENT_SECRET,
   twitchStreamers: streamers.map(streamer => streamer.login),
-  streamPollMinutes: Math.max(1, Math.min(Number(process.env.STREAM_POLL_MINUTES) || 5, 60))
+  streamPollMinutes: Math.max(1, Math.min(Number(process.env.STREAM_POLL_MINUTES) || 5, 60)),
+  tempVoiceLobbyId: process.env.TEMP_VOICE_LOBBY_ID,
+  tempVoiceCategoryId: process.env.TEMP_VOICE_CATEGORY_ID
 };
 
 if (!['delete', 'timeout', 'ban'].includes(config.filterAction)) {
@@ -296,6 +298,35 @@ client.on(Events.GuildMemberAdd, async member => {
   const channel = await member.guild.channels.fetch(config.welcomeChannelId).catch(() => null);
   if (channel?.isTextBased()) {
     await channel.send(`Willkommen auf **${member.guild.name}**, ${member}! Bitte lies zuerst die Regeln.`);
+  }
+});
+
+async function removeEmptyTempVoiceChannel(channel) {
+  if (!channel?.isVoiceBased() || !channel.name.startsWith('🔊│')) return;
+  if (channel.members.size !== 0) return;
+  await channel.delete('Temporärer Sprachkanal ist leer').catch(error =>
+    console.error('Temporärer Sprachkanal konnte nicht gelöscht werden:', error.message));
+}
+
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  // Leere, vom Bot angelegte Räume werden automatisch entfernt.
+  if (oldState.channelId && oldState.channelId !== newState.channelId) {
+    await removeEmptyTempVoiceChannel(oldState.channel);
+  }
+  if (!config.tempVoiceLobbyId || newState.channelId !== config.tempVoiceLobbyId) return;
+
+  const lobby = newState.channel;
+  if (!lobby?.isVoiceBased()) return;
+  try {
+    const room = await newState.guild.channels.create({
+      name: `🔊│${newState.member.displayName}`.slice(0, 100),
+      type: ChannelType.GuildVoice,
+      parent: config.tempVoiceCategoryId || lobby.parentId || undefined,
+      reason: `Temporärer Talk für ${newState.member.user.tag}`
+    });
+    await newState.setChannel(room, 'Eigenen temporären Talk erstellen');
+  } catch (error) {
+    console.error('Temporärer Sprachkanal konnte nicht erstellt werden:', error.message);
   }
 });
 
