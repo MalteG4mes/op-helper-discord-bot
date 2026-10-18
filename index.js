@@ -250,6 +250,29 @@ async function closeTicket(thread, ticket) {
   await thread.setArchived(true);
 }
 
+function closeRequestComponents() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('ticket:approve-close').setLabel('Schließung bestätigen').setEmoji('✅').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('ticket:deny-close').setLabel('Ablehnen').setEmoji('↩️').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+async function requestTicketClose(thread, requester, supportRoleId) {
+  const recentMessages = await thread.messages.fetch({ limit: 30 });
+  const alreadyRequested = recentMessages.some(message => message.components.some(row =>
+    row.components.some(component => component.customId === 'ticket:approve-close')));
+  if (alreadyRequested) return false;
+  await thread.send({
+    content: supportRoleId ? `<@&${supportRoleId}>` : undefined,
+    embeds: [new EmbedBuilder().setColor(0xFEE75C).setTitle('Schließungsantrag')
+      .setDescription(`${requester} möchte dieses Ticket schließen. Das Support-Team entscheidet darüber.`)
+      .setTimestamp()],
+    components: [closeRequestComponents()],
+    allowedMentions: supportRoleId ? { roles: [supportRoleId] } : { parse: [] }
+  });
+  return true;
+}
+
 client.once(Events.ClientReady, async readyClient => {
   console.log(`Angemeldet als ${readyClient.user.tag}`);
   try {
@@ -325,10 +348,10 @@ client.on(Events.InteractionCreate, async interaction => {
       await ticket.send({
         content: `${interaction.user}${supportRoleId !== 'none' ? ` <@&${supportRoleId}>` : ''}`,
         embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(`${ticketTypes[ticketType].label}-Ticket`)
-          .setDescription('Beschreibe dein Anliegen so genau wie möglich. Ein Teammitglied meldet sich hier.\n\nMit `/ticket close` oder dem Button unten schließt du dieses Ticket.')
+          .setDescription('Beschreibe dein Anliegen so genau wie möglich. Ein Teammitglied meldet sich hier.\n\nMit `/ticket close` oder dem Button unten stellst du einen Schließungsantrag. Das Support-Team bestätigt ihn.')
           .setTimestamp()],
         components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('ticket:close').setLabel('Ticket schließen').setEmoji('🔒').setStyle(ButtonStyle.Danger)
+          new ButtonBuilder().setCustomId('ticket:close').setLabel('Schließung beantragen').setEmoji('🔒').setStyle(ButtonStyle.Primary)
         )],
         allowedMentions: supportRoleId !== 'none'
           ? { roles: [supportRoleId], users: [interaction.user.id] }
@@ -345,14 +368,39 @@ client.on(Events.InteractionCreate, async interaction => {
     const ticket = parseTicketThread(interaction.channel);
     if (!ticket || ticket.state !== 'offen') return interaction.reply({ content: 'Dieses Ticket ist bereits geschlossen oder ungültig.', ephemeral: true });
     const supportRoleId = interaction.message.mentions.roles.first()?.id;
-    if (!canManageTicket(interaction, ticket, supportRoleId)) {
-      return interaction.reply({ content: 'Nur die Person, die das Ticket erstellt hat, oder das Support-Team kann es schließen.', ephemeral: true });
+    if (interaction.user.id !== ticket.ownerId) {
+      return interaction.reply({ content: 'Nur die Person, die das Ticket erstellt hat, kann einen Schließungsantrag stellen.', ephemeral: true });
     }
     try {
-      await closeTicket(interaction.channel, ticket);
-      return interaction.reply({ content: 'Ticket geschlossen und als Thread archiviert.', ephemeral: true });
+      const requested = await requestTicketClose(interaction.channel, interaction.user, supportRoleId);
+      return interaction.reply({ content: requested ? 'Dein Schließungsantrag wurde an das Support-Team gesendet.' : 'Für dieses Ticket gibt es bereits einen offenen Schließungsantrag.', ephemeral: true });
     } catch (error) {
-      return interaction.reply({ content: `Ticket konnte nicht geschlossen werden: ${error.message}`, ephemeral: true });
+      return interaction.reply({ content: `Schließungsantrag konnte nicht gesendet werden: ${error.message}`, ephemeral: true });
+    }
+  }
+
+  if (interaction.isButton() && ['ticket:approve-close', 'ticket:deny-close'].includes(interaction.customId)) {
+    const ticket = parseTicketThread(interaction.channel);
+    if (!ticket || ticket.state !== 'offen') return interaction.reply({ content: 'Dieses Ticket ist bereits geschlossen oder ungültig.', ephemeral: true });
+    const supportRoleId = await getTicketSupportRoleId(interaction.channel);
+    const isSupport = isTicketSupport(interaction, supportRoleId) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageThreads) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels);
+    if (!isSupport) return interaction.reply({ content: 'Nur das Support-Team darf einen Schließungsantrag bearbeiten.', ephemeral: true });
+    if (interaction.customId === 'ticket:deny-close') {
+      return interaction.update({
+        embeds: [new EmbedBuilder().setColor(0x57F287).setTitle('Schließungsantrag abgelehnt')
+          .setDescription(`${interaction.user} hat den Schließungsantrag abgelehnt. Das Ticket bleibt offen.`).setTimestamp()],
+        components: []
+      });
+    }
+    try {
+      await interaction.update({
+        embeds: [new EmbedBuilder().setColor(0xED4245).setTitle('Schließungsantrag bestätigt')
+          .setDescription(`${interaction.user} hat den Antrag bestätigt. Das Ticket wird archiviert.`).setTimestamp()],
+        components: []
+      });
+      await closeTicket(interaction.channel, ticket);
+    } catch (error) {
+      return interaction.followUp({ content: `Ticket konnte nicht geschlossen werden: ${error.message}`, ephemeral: true });
     }
   }
 
@@ -404,8 +452,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
     try {
       if (subcommand === 'close') {
+        if (interaction.user.id === ticket.ownerId) {
+          const requested = await requestTicketClose(interaction.channel, interaction.user, supportRoleId);
+          return interaction.reply({ content: requested ? 'Dein Schließungsantrag wurde an das Support-Team gesendet.' : 'Für dieses Ticket gibt es bereits einen offenen Schließungsantrag.', ephemeral: true });
+        }
         await closeTicket(interaction.channel, ticket);
-        return interaction.reply({ content: 'Ticket geschlossen und als Thread archiviert.', ephemeral: true });
+        return interaction.reply({ content: 'Schließungsantrag bestätigt: Ticket geschlossen und archiviert.', ephemeral: true });
       }
       if (subcommand === 'add') {
         const member = interaction.options.getMember('mitglied');
