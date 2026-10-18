@@ -284,6 +284,16 @@ async function requestTicketClose(thread, ticket, requester) {
 
 client.once(Events.ClientReady, async readyClient => {
   console.log(`Angemeldet als ${readyClient.user.tag}`);
+  if (config.tempVoiceLobbyId) {
+    const lobby = await readyClient.channels.fetch(config.tempVoiceLobbyId).catch(error => {
+      console.error('Voice-Lobby konnte nicht geladen werden:', error.message);
+      return null;
+    });
+    if (lobby) {
+      const permissions = lobby.permissionsFor(readyClient.user);
+      console.log(`Voice-Lobby erkannt: ${lobby.name} (Voice: ${lobby.isVoiceBased()}, Verwalten: ${permissions?.has(PermissionFlagsBits.ManageChannels)}, Verschieben: ${permissions?.has(PermissionFlagsBits.MoveMembers)})`);
+    }
+  }
   try {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     await rest.put(Routes.applicationCommands(readyClient.user.id), { body: commands.map(command => command.toJSON()) });
@@ -310,6 +320,7 @@ async function removeEmptyTempVoiceChannel(channel) {
 }
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  console.log(`Voice-Status: ${newState.member?.user?.tag || 'unbekannt'} ${oldState.channelId || '—'} → ${newState.channelId || '—'}`);
   // Leere, vom Bot angelegte Räume werden automatisch entfernt.
   if (oldState.channelId && oldState.channelId !== newState.channelId) {
     await removeEmptyTempVoiceChannel(oldState.channel);
