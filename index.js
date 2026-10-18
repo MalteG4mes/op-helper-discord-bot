@@ -338,9 +338,9 @@ client.on(Events.InteractionCreate, async interaction => {
       const activeThreads = await ticketChannel.threads.fetchActive();
       const existing = activeThreads.threads.find(thread => {
         const details = parseTicketThread(thread);
-        return details?.ownerId === interaction.user.id && details.state === 'offen';
+        return details?.ownerId === interaction.user.id && details.state === 'offen' && details.type === ticketType;
       });
-      if (existing) return interaction.reply({ content: `Du hast bereits ein offenes Ticket: <#${existing.id}>`, ephemeral: true });
+      if (existing) return interaction.reply({ content: `Du hast bereits ein offenes ${ticketTypes[ticketType].label}-Ticket: <#${existing.id}>`, ephemeral: true });
 
       const ticket = await ticketChannel.threads.create({
         name: ticketThreadName({ type: ticketType, ownerId: interaction.user.id, title: interaction.user.username }),
