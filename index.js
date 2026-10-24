@@ -521,6 +521,11 @@ client.on(Events.InteractionCreate, async interaction => {
       }
       const supportRole = interaction.options.getRole('supportrolle');
       try {
+        // Der normale Ticket-Startkanal bleibt für alle lesbar, auch wenn die
+        // übergeordnete Kategorie den Nachrichtenverlauf eingeschränkt hat.
+        await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+          ReadMessageHistory: true
+        }, 'Nachrichtenverlauf im Ticket-Startkanal anzeigen');
         await interaction.channel.send({
           embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Tickets')
             .setDescription('Wähle unten dein Thema aus. Danach wird für dich ein **privater Thread** in diesem Kanal erstellt.')],
