@@ -15,7 +15,19 @@ const streamers = [
   { login: 'misskowalski', displayName: 'MissKowalski' },
   { login: 'opphorx', displayName: 'Opphil' },
   { login: 'wuchitv', displayName: 'WuchiTV' },
-  { login: 'ronjawolf2007', displayName: 'RonjaWolf2007' }
+  { login: 'ronjawolf2007', displayName: 'RonjaWolf2007' },
+  { login: 'moorrisss', displayName: 'Moorrisss' },
+  { login: 'chronoyaksha', displayName: 'Chronoyaksha' },
+  { login: 'flammengott', displayName: 'Flammengott' },
+  { login: 'bagontr01', displayName: 'BagonTr01' },
+  { login: 'codewizardtv', displayName: 'CodeWizardTV' },
+  { login: 'derliber', displayName: 'Derliber' },
+  { login: 'fynnow', displayName: 'Fynnow' },
+  { login: 'kaledoss', displayName: 'Kaledoss' },
+  { login: 'muecke0702', displayName: 'Muecke0702' },
+  { login: 'roggberd', displayName: 'Roggberd' },
+  { login: 'scusy', displayName: 'Scusy' },
+  { login: 'xxlukas', displayName: 'XxLukas' }
 ].map(streamer => ({ ...streamer, roleName: `Stream-Ping: ${streamer.displayName}` }));
 
 const config = {
@@ -181,11 +193,14 @@ async function getOrCreateStreamRole(guild, streamer) {
 }
 
 function streamRoleButtons() {
-  return new ActionRowBuilder().addComponents(
-    streamers.map(streamer => new ButtonBuilder()
-      .setCustomId(`stream-role:${streamer.login}`)
-      .setLabel(streamer.displayName)
-      .setStyle(ButtonStyle.Primary))
+  const buttons = streamers.map(streamer => new ButtonBuilder()
+    .setCustomId(`stream-role:${streamer.login}`)
+    .setLabel(streamer.displayName)
+    .setStyle(ButtonStyle.Primary));
+
+  // Discord erlaubt höchstens fünf Buttons in einer Zeile.
+  return Array.from({ length: Math.ceil(buttons.length / 5) }, (_, index) =>
+    new ActionRowBuilder().addComponents(buttons.slice(index * 5, index * 5 + 5))
   );
 }
 
