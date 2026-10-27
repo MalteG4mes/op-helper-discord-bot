@@ -598,7 +598,7 @@ client.on(Events.InteractionCreate, async interaction => {
           .setColor(0x9146FF)
           .setTitle('Streamer-Benachrichtigungen')
           .setDescription('Klicke auf einen Namen, um die entsprechende Ping-Rolle ein- oder auszuschalten. Du kannst mehrere auswählen.')],
-        components: [streamRoleButtons()]
+        components: streamRoleButtons()
       });
       return interaction.reply({ content: 'Die auswählbaren Streamer-Rollen wurden eingerichtet.', ephemeral: true });
     } catch (error) {
