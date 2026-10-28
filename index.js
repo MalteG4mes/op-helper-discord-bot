@@ -87,7 +87,12 @@ const commands = [
     .addSubcommand(subcommand => subcommand
       .setName('setup')
       .setDescription('Erstellt das Ticket-Auswahlmenü in diesem Kanal')
-      .addRoleOption(option => option.setName('supportrolle').setDescription('Rolle, die Tickets bearbeiten darf')))
+      .addRoleOption(option => option.setName('supportrolle').setDescription('Rolle, die Tickets bearbeiten darf'))
+      .addChannelOption(option => option
+        .setName('benachrichtigungskanal')
+        .setDescription('Kanal, in dem das Team neue Tickets sieht und beitritt')
+        .setRequired(true)
+        .addChannelTypes(ChannelType.GuildText)))
     .addSubcommand(subcommand => subcommand
       .setName('close')
       .setDescription('Schließt das Ticket in diesem Thread'))
@@ -212,12 +217,13 @@ const ticketTypes = {
   sonstiges: { label: 'Sonstiges', description: 'Anderes Anliegen', emoji: '💬' }
 };
 
-function ticketPanelComponents(ticketChannelId, supportRoleId) {
+function ticketPanelComponents(ticketChannelId, supportRoleId, notificationChannelId) {
   return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`ticket:create:${ticketChannelId}:${supportRoleId || 'none'}`)
-      .setPlaceholder('Wähle aus, wofür du ein Ticket brauchst')
-      .addOptions(Object.entries(ticketTypes).map(([value, type]) => ({ value, ...type })))
+    new ButtonBuilder()
+      .setCustomId(`ticket:create:${ticketChannelId}:${supportRoleId || 'none'}:${notificationChannelId}`)
+      .setLabel('Ticket erstellen')
+      .setEmoji('🎫')
+      .setStyle(ButtonStyle.Primary)
   );
 }
 
@@ -405,13 +411,13 @@ client.on(Events.MessageCreate, async message => {
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.inGuild()) return;
 
-  if (interaction.isStringSelectMenu() && interaction.customId.startsWith('ticket:create:')) {
-    const [, , ticketChannelId, supportRoleId = 'none'] = interaction.customId.split(':');
+  if ((interaction.isStringSelectMenu() || interaction.isButton()) && interaction.customId.startsWith('ticket:create:')) {
+    const [, , ticketChannelId, supportRoleId = 'none', notificationChannelId = 'none'] = interaction.customId.split(':');
     const ticketChannel = await interaction.guild.channels.fetch(ticketChannelId).catch(() => null);
     if (!ticketChannel?.isTextBased() || !ticketChannel.threads) {
       return interaction.reply({ content: 'Der Ticket-Kanal wurde nicht gefunden.', ephemeral: true });
     }
-    const ticketType = interaction.values[0] || 'support';
+    const ticketType = interaction.isStringSelectMenu() ? (interaction.values[0] || 'support') : 'support';
     if (!ticketTypes[ticketType]) return interaction.reply({ content: 'Diese Ticket-Art gibt es nicht.', ephemeral: true });
     try {
       const activeThreads = await ticketChannel.threads.fetchActive();
@@ -429,7 +435,6 @@ client.on(Events.InteractionCreate, async interaction => {
         reason: `${ticketTypes[ticketType].label}-Ticket von ${interaction.user.tag}`
       });
       await ticket.members.add(interaction.user.id);
-      if (supportRoleId !== 'none') await addSupportMembers(ticket, interaction.guild, supportRoleId);
       await ticket.send({
         content: `${interaction.user}${supportRoleId !== 'none' ? ` <@&${supportRoleId}>` : ''}`,
         embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(`${ticketTypes[ticketType].label}-Ticket`)
@@ -442,10 +447,48 @@ client.on(Events.InteractionCreate, async interaction => {
           ? { roles: [supportRoleId], users: [interaction.user.id] }
           : { users: [interaction.user.id] }
       });
+      if (notificationChannelId !== 'none') {
+        const notificationChannel = await interaction.guild.channels.fetch(notificationChannelId).catch(() => null);
+        if (notificationChannel?.isTextBased()) {
+          await notificationChannel.send({
+            content: supportRoleId !== 'none' ? `<@&${supportRoleId}>` : undefined,
+            embeds: [new EmbedBuilder().setColor(0xFEE75C).setTitle('Neues Ticket')
+              .setDescription(`${interaction.user} hat ein neues Ticket erstellt. Klicke auf den Button, um dem privaten Ticket beizutreten.`)
+              .addFields({ name: 'Ticket', value: `<#${ticket.id}>` })
+              .setTimestamp()],
+            components: [new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`ticket:join:${ticket.id}:${supportRoleId}`)
+                .setLabel('Ticket beitreten')
+                .setEmoji('📩')
+                .setStyle(ButtonStyle.Success)
+            )],
+            allowedMentions: supportRoleId !== 'none' ? { roles: [supportRoleId] } : { parse: [] }
+          });
+        }
+      }
       return interaction.reply({ content: `Dein privates Ticket wurde als Thread erstellt: <#${ticket.id}>`, ephemeral: true });
     } catch (error) {
       console.error('Ticket konnte nicht erstellt werden:', error);
       return interaction.reply({ content: `Ticket konnte nicht erstellt werden: ${error.message}`, ephemeral: true });
+    }
+  }
+
+  if (interaction.isButton() && interaction.customId.startsWith('ticket:join:')) {
+    const [, , ticketId, supportRoleId = 'none'] = interaction.customId.split(':');
+    const ticketChannel = await interaction.guild.channels.fetch(ticketId).catch(() => null);
+    const ticket = parseTicketThread(ticketChannel);
+    if (!ticket || ticket.state !== 'offen') {
+      return interaction.reply({ content: 'Dieses Ticket ist nicht mehr offen.', ephemeral: true });
+    }
+    if (!isTicketTeam(interaction, supportRoleId === 'none' ? null : supportRoleId)) {
+      return interaction.reply({ content: 'Nur das Support-Team darf diesem Ticket beitreten.', ephemeral: true });
+    }
+    try {
+      await ticketChannel.members.add(interaction.user.id);
+      return interaction.reply({ content: `Du bist dem Ticket beigetreten: <#${ticketChannel.id}>`, ephemeral: true });
+    } catch (error) {
+      return interaction.reply({ content: `Beitritt zum Ticket fehlgeschlagen: ${error.message}`, ephemeral: true });
     }
   }
 
@@ -535,6 +578,10 @@ client.on(Events.InteractionCreate, async interaction => {
         return interaction.reply({ content: 'Führe `/ticket setup` bitte in einem normalen Textkanal aus, nicht in einem Thread.', ephemeral: true });
       }
       const supportRole = interaction.options.getRole('supportrolle');
+      const notificationChannel = interaction.options.getChannel('benachrichtigungskanal', true);
+      if (!notificationChannel?.isTextBased() || notificationChannel.isThread?.()) {
+        return interaction.reply({ content: 'Wähle bitte einen normalen Textkanal für die Ticket-Benachrichtigungen.', ephemeral: true });
+      }
       try {
         // Der normale Ticket-Startkanal bleibt für alle lesbar, auch wenn die
         // übergeordnete Kategorie den Nachrichtenverlauf eingeschränkt hat.
@@ -543,8 +590,8 @@ client.on(Events.InteractionCreate, async interaction => {
         }, 'Nachrichtenverlauf im Ticket-Startkanal anzeigen');
         await interaction.channel.send({
           embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Tickets')
-            .setDescription('Wähle unten dein Thema aus. Danach wird für dich ein **privater Thread** in diesem Kanal erstellt.')],
-          components: [ticketPanelComponents(interaction.channel.id, supportRole?.id)]
+            .setDescription('Klicke unten auf **Ticket erstellen**. Danach wird für dich ein privater Ticket-Thread erstellt.')],
+          components: [ticketPanelComponents(interaction.channel.id, supportRole?.id, notificationChannel.id)]
         });
         return interaction.reply({ content: 'Das Ticket-Auswahlmenü wurde erstellt.', ephemeral: true });
       } catch (error) {
