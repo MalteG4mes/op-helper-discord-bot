@@ -502,6 +502,24 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
   }
 });
 
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+  if (user.bot || reaction.emoji.name !== '✅') return;
+  try {
+    if (reaction.partial) await reaction.fetch();
+    const message = reaction.message;
+    if (message.partial) await message.fetch();
+    if (!message.guild || !isRulesMessage(message)) return;
+
+    const member = await message.guild.members.fetch(user.id);
+    const memberRole = await getOrCreateMemberRole(message.guild);
+    if (member.roles.cache.has(memberRole.id)) {
+      await member.roles.remove(memberRole, 'Regel-Bestätigung mit grünem Haken zurückgenommen');
+    }
+  } catch (error) {
+    console.error('Mitgliederrolle nach entfernten Regel-Haken konnte nicht entfernt werden:', error.message);
+  }
+});
+
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.inGuild()) return;
 
