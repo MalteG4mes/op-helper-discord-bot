@@ -3,7 +3,7 @@ const {
   Client, GatewayIntentBits, Events, PermissionFlagsBits,
   EmbedBuilder, REST, Routes, SlashCommandBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType,
-  StringSelectMenuBuilder
+  StringSelectMenuBuilder, Partials
 } = require('discord.js');
 
 const required = ['DISCORD_TOKEN'];
@@ -44,7 +44,8 @@ const config = {
   twitchStreamers: streamers.map(streamer => streamer.login),
   streamPollMinutes: Math.max(1, Math.min(Number(process.env.STREAM_POLL_MINUTES) || 5, 60)),
   tempVoiceLobbyId: process.env.TEMP_VOICE_LOBBY_ID,
-  tempVoiceCategoryId: process.env.TEMP_VOICE_CATEGORY_ID
+  tempVoiceCategoryId: process.env.TEMP_VOICE_CATEGORY_ID,
+  rulesChannelId: process.env.RULES_CHANNEL_ID || '1554115823759785984'
 };
 
 if (!['delete', 'timeout', 'ban'].includes(config.filterAction)) {
@@ -56,9 +57,11 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.MessageContent
-  ]
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
 const commands = [
@@ -108,6 +111,21 @@ const commands = [
     .setName('voice-kick')
     .setDescription('Entfernt ein Mitglied aus deinem eigenen temporären Voice-Chat')
     .addUserOption(option => option.setName('mitglied').setDescription('Mitglied, das entfernt werden soll').setRequired(true))
+  ,
+  new SlashCommandBuilder()
+    .setName('regeln')
+    .setDescription('Richtet die Server-Verifizierung per grünem Haken ein')
+    .addSubcommand(subcommand => subcommand
+      .setName('setup')
+      .setDescription('Sendet die Regeln mit einem grünen Bestätigungs-Haken in diesen Kanal'))
+    .addSubcommand(subcommand => subcommand
+      .setName('kategorie')
+      .setDescription('Schaltet eine Mitglieder-Kategorie für die Rolle Verifiziert frei')
+      .addChannelOption(option => option
+        .setName('kategorie')
+        .setDescription('Nur eine Kategorie für normale Mitglieder – keine Team-Kategorie')
+        .setRequired(true)
+        .addChannelTypes(ChannelType.GuildCategory)))
 ];
 
 const streamerStatus = new Map();
@@ -195,6 +213,24 @@ async function getOrCreateStreamRole(guild, streamer) {
     mentionable: false,
     reason: 'Opt-in-Rolle für Twitch-Streamer-Benachrichtigungen'
   });
+}
+
+async function getOrCreateMemberRole(guild) {
+  const existing = guild.roles.cache.find(role => role.name === 'Verifiziert');
+  if (existing) return existing;
+  return guild.roles.create({
+    name: 'Verifiziert',
+    mentionable: false,
+    reason: 'Rolle für bestätigte Serverregeln'
+  });
+}
+
+function isRulesMessage(message) {
+  const botRulesMessage = message.author?.id === client.user?.id &&
+    message.embeds.some(embed => embed.title === 'Serverregeln');
+  const configuredRulesText = message.channelId === config.rulesChannelId &&
+    message.content?.includes('Serverregeln');
+  return botRulesMessage || configuredRulesText;
 }
 
 function streamRoleButtons() {
@@ -408,6 +444,24 @@ client.on(Events.MessageCreate, async message => {
   ]);
 });
 
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  if (user.bot || reaction.emoji.name !== '✅') return;
+  try {
+    if (reaction.partial) await reaction.fetch();
+    const message = reaction.message;
+    if (message.partial) await message.fetch();
+    if (!message.guild || !isRulesMessage(message)) return;
+
+    const member = await message.guild.members.fetch(user.id);
+    const memberRole = await getOrCreateMemberRole(message.guild);
+    if (!member.roles.cache.has(memberRole.id)) {
+      await member.roles.add(memberRole, 'Serverregeln mit grünem Haken bestätigt');
+    }
+  } catch (error) {
+    console.error('Mitgliederrolle nach Regel-Bestätigung konnte nicht vergeben werden:', error.message);
+  }
+});
+
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.inGuild()) return;
 
@@ -545,6 +599,49 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === 'regeln') {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      return interaction.reply({ content: 'Dafür brauchst du die Berechtigung „Server verwalten“.', ephemeral: true });
+    }
+    const subcommand = interaction.options.getSubcommand();
+    try {
+      const memberRole = await getOrCreateMemberRole(interaction.guild);
+      if (subcommand === 'setup') {
+        if (!interaction.channel?.isTextBased() || interaction.channel.isThread?.()) {
+          return interaction.reply({ content: 'Führe `/regeln setup` bitte im normalen Regeln-Textkanal aus.', ephemeral: true });
+        }
+        const rulesMessage = await interaction.channel.send({
+          embeds: [new EmbedBuilder()
+            .setColor(0x57F287)
+            .setTitle('Serverregeln')
+            .setDescription(`Willkommen auf **${interaction.guild.name}**!\n\nBitte lies die Regeln vollständig durch:\n\n1. Gehe respektvoll miteinander um – keine Beleidigungen, Diskriminierung oder Belästigung.\n2. Kein Spam, keine Werbung und keine unerlaubten Links.\n3. Nutze die passenden Kanäle für dein Thema und halte dich an die Discord-Richtlinien.\n4. Folge den Anweisungen des Teams.\n\nReagiere unten mit ✅. Damit bestätigst du die Regeln und erhältst Zugriff auf die Mitgliederbereiche.`)
+            .setFooter({ text: `Nach der Bestätigung erhältst du die Rolle ${memberRole.name}.` })
+            .setTimestamp()]
+        });
+        await rulesMessage.react('✅');
+        return interaction.reply({ content: 'Die Regeln mit dem grünen Bestätigungs-Haken wurden gesendet.', ephemeral: true });
+      }
+
+      const category = interaction.options.getChannel('kategorie', true);
+      if (category.type !== ChannelType.GuildCategory) {
+        return interaction.reply({ content: 'Wähle bitte eine Kategorie aus.', ephemeral: true });
+      }
+      const channels = interaction.guild.channels.cache.filter(channel =>
+        channel.id === category.id || channel.parentId === category.id);
+      await Promise.all(channels.map(async channel => {
+        await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+          ViewChannel: false
+        }, 'Mitgliederbereich nur nach Regel-Bestätigung');
+        await channel.permissionOverwrites.edit(memberRole, {
+          ViewChannel: true,
+          ReadMessageHistory: true
+        }, 'Mitgliederbereich für bestätigte Mitglieder freigeben');
+      }));
+      return interaction.reply({ content: `Die Kategorie **${category.name}** ist jetzt nur für die Rolle **Verifiziert** sichtbar. Team-Kategorien wurden nicht verändert.`, ephemeral: true });
+    } catch (error) {
+      return interaction.reply({ content: `Regel-Verifizierung konnte nicht eingerichtet werden: ${error.message}`, ephemeral: true });
+    }
+  }
   if (interaction.commandName === 'voice-kick') {
     const caller = await interaction.guild.members.fetch(interaction.user.id);
     const room = caller.voice.channel;
