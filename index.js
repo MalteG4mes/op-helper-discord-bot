@@ -127,6 +127,14 @@ const commands = [
         .setDescription('Nur eine Kategorie für normale Mitglieder – keine Team-Kategorie')
         .setRequired(true)
         .addChannelTypes(ChannelType.GuildCategory)))
+    .addSubcommand(subcommand => subcommand
+      .setName('alle')
+      .setDescription('Schützt alle normalen Kanäle auf einmal')
+      .addChannelOption(option => option
+        .setName('team-kategorie')
+        .setDescription('Diese Team-Kategorie und ihre Kanäle bleiben unverändert')
+        .setRequired(true)
+        .addChannelTypes(ChannelType.GuildCategory)))
 ];
 
 const streamerStatus = new Map();
@@ -230,6 +238,31 @@ function getLegacyMemberRole(guild) {
   // Die Minecraft-Mod vergibt weiterhin diese Rolle. Sie darf allein keinen
   // Zugang zu geschützten Mitgliederbereichen gewähren.
   return guild.roles.cache.find(role => role.name === config.legacyMemberRoleName);
+}
+
+async function protectMemberChannels(channels, guild, verifiedRole) {
+  const legacyMemberRole = getLegacyMemberRole(guild);
+  await Promise.all(channels.map(async channel => {
+    await channel.permissionOverwrites.edit(guild.roles.everyone, {
+      ViewChannel: false
+    }, 'Mitgliederbereich nur nach Regel-Bestätigung');
+    if (legacyMemberRole && legacyMemberRole.id !== verifiedRole.id) {
+      await channel.permissionOverwrites.edit(legacyMemberRole, {
+        ViewChannel: false
+      }, 'Die alte Mitglied-Rolle reicht ohne Regel-Bestätigung nicht aus');
+    }
+    await channel.permissionOverwrites.edit(verifiedRole, {
+      ViewChannel: true,
+      ReadMessageHistory: true
+    }, 'Mitgliederbereich für bestätigte Mitglieder freigeben');
+  }));
+}
+
+async function makeChannelPublic(channel, guild) {
+  await channel.permissionOverwrites.edit(guild.roles.everyone, {
+    ViewChannel: true,
+    ReadMessageHistory: true
+  }, 'Öffentlicher Kanal vor der Regel-Bestätigung');
 }
 
 function isRulesMessage(message) {
@@ -629,28 +662,34 @@ client.on(Events.InteractionCreate, async interaction => {
         return interaction.reply({ content: 'Die Regeln mit dem grünen Bestätigungs-Haken wurden gesendet.', ephemeral: true });
       }
 
-      const category = interaction.options.getChannel('kategorie', true);
-      if (category.type !== ChannelType.GuildCategory) {
-        return interaction.reply({ content: 'Wähle bitte eine Kategorie aus.', ephemeral: true });
-      }
-      const channels = interaction.guild.channels.cache.filter(channel =>
-        channel.id === category.id || channel.parentId === category.id);
-      const legacyMemberRole = getLegacyMemberRole(interaction.guild);
-      await Promise.all(channels.map(async channel => {
-        await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
-          ViewChannel: false
-        }, 'Mitgliederbereich nur nach Regel-Bestätigung');
-        if (legacyMemberRole && legacyMemberRole.id !== memberRole.id) {
-          await channel.permissionOverwrites.edit(legacyMemberRole, {
-            ViewChannel: false
-          }, 'Die alte Mitglied-Rolle reicht ohne Regel-Bestätigung nicht aus');
+      if (subcommand === 'kategorie') {
+        const category = interaction.options.getChannel('kategorie', true);
+        if (category.type !== ChannelType.GuildCategory) {
+          return interaction.reply({ content: 'Wähle bitte eine Kategorie aus.', ephemeral: true });
         }
-        await channel.permissionOverwrites.edit(memberRole, {
-          ViewChannel: true,
-          ReadMessageHistory: true
-        }, 'Mitgliederbereich für bestätigte Mitglieder freigeben');
-      }));
-      return interaction.reply({ content: `Die Kategorie **${category.name}** ist jetzt nur mit **Verifiziert** sichtbar. Die Rolle **${config.legacyMemberRoleName}** allein reicht dort nicht mehr aus. Team-Kategorien wurden nicht verändert.`, ephemeral: true });
+        const channels = interaction.guild.channels.cache.filter(channel =>
+          (channel.id === category.id || channel.parentId === category.id) && !channel.isThread?.());
+        await protectMemberChannels(channels, interaction.guild, memberRole);
+        return interaction.reply({ content: `Die Kategorie **${category.name}** ist jetzt nur mit **Verifiziert** sichtbar. Die Rolle **${config.legacyMemberRoleName}** allein reicht dort nicht mehr aus.`, ephemeral: true });
+      }
+
+      const teamCategory = interaction.options.getChannel('team-kategorie', true);
+      if (teamCategory.type !== ChannelType.GuildCategory) {
+        return interaction.reply({ content: 'Wähle bitte deine Team-Kategorie aus.', ephemeral: true });
+      }
+      const publicChannelIds = new Set([config.rulesChannelId, config.welcomeChannelId].filter(Boolean));
+      const protectedChannels = interaction.guild.channels.cache.filter(channel =>
+        !channel.isThread?.() &&
+        channel.id !== teamCategory.id &&
+        channel.parentId !== teamCategory.id &&
+        !publicChannelIds.has(channel.id));
+      await protectMemberChannels(protectedChannels, interaction.guild, memberRole);
+
+      for (const channelId of publicChannelIds) {
+        const channel = interaction.guild.channels.cache.get(channelId);
+        if (channel?.permissionOverwrites) await makeChannelPublic(channel, interaction.guild);
+      }
+      return interaction.reply({ content: `Alle normalen Kanäle sind jetzt nur mit **Verifiziert** sichtbar. Regeln und Willkommen bleiben offen; die Team-Kategorie **${teamCategory.name}** wurde nicht verändert.`, ephemeral: true });
     } catch (error) {
       return interaction.reply({ content: `Regel-Verifizierung konnte nicht eingerichtet werden: ${error.message}`, ephemeral: true });
     }
