@@ -45,7 +45,8 @@ const config = {
   streamPollMinutes: Math.max(1, Math.min(Number(process.env.STREAM_POLL_MINUTES) || 5, 60)),
   tempVoiceLobbyId: process.env.TEMP_VOICE_LOBBY_ID,
   tempVoiceCategoryId: process.env.TEMP_VOICE_CATEGORY_ID,
-  rulesChannelId: process.env.RULES_CHANNEL_ID || '1554115823759785984'
+  rulesChannelId: process.env.RULES_CHANNEL_ID || '1554115823759785984',
+  legacyMemberRoleName: process.env.LEGACY_MEMBER_ROLE_NAME || 'Mitglied'
 };
 
 if (!['delete', 'timeout', 'ban'].includes(config.filterAction)) {
@@ -223,6 +224,12 @@ async function getOrCreateMemberRole(guild) {
     mentionable: false,
     reason: 'Rolle für bestätigte Serverregeln'
   });
+}
+
+function getLegacyMemberRole(guild) {
+  // Die Minecraft-Mod vergibt weiterhin diese Rolle. Sie darf allein keinen
+  // Zugang zu geschützten Mitgliederbereichen gewähren.
+  return guild.roles.cache.find(role => role.name === config.legacyMemberRoleName);
 }
 
 function isRulesMessage(message) {
@@ -628,16 +635,22 @@ client.on(Events.InteractionCreate, async interaction => {
       }
       const channels = interaction.guild.channels.cache.filter(channel =>
         channel.id === category.id || channel.parentId === category.id);
+      const legacyMemberRole = getLegacyMemberRole(interaction.guild);
       await Promise.all(channels.map(async channel => {
         await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
           ViewChannel: false
         }, 'Mitgliederbereich nur nach Regel-Bestätigung');
+        if (legacyMemberRole && legacyMemberRole.id !== memberRole.id) {
+          await channel.permissionOverwrites.edit(legacyMemberRole, {
+            ViewChannel: false
+          }, 'Die alte Mitglied-Rolle reicht ohne Regel-Bestätigung nicht aus');
+        }
         await channel.permissionOverwrites.edit(memberRole, {
           ViewChannel: true,
           ReadMessageHistory: true
         }, 'Mitgliederbereich für bestätigte Mitglieder freigeben');
       }));
-      return interaction.reply({ content: `Die Kategorie **${category.name}** ist jetzt nur für die Rolle **Verifiziert** sichtbar. Team-Kategorien wurden nicht verändert.`, ephemeral: true });
+      return interaction.reply({ content: `Die Kategorie **${category.name}** ist jetzt nur mit **Verifiziert** sichtbar. Die Rolle **${config.legacyMemberRoleName}** allein reicht dort nicht mehr aus. Team-Kategorien wurden nicht verändert.`, ephemeral: true });
     } catch (error) {
       return interaction.reply({ content: `Regel-Verifizierung konnte nicht eingerichtet werden: ${error.message}`, ephemeral: true });
     }
