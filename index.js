@@ -141,7 +141,6 @@ const commands = [
 
 const streamerStatus = new Map();
 const temporaryVoiceOwners = new Map();
-const ticketAiHistory = new Map();
 const ticketAiBusyThreads = new Set();
 let twitchAccessToken;
 let twitchAccessTokenExpiresAt = 0;
@@ -297,6 +296,19 @@ const ticketTypes = {
   sonstiges: { label: 'Sonstiges', description: 'Anderes Anliegen', emoji: '💬' }
 };
 
+const opHelperKnowledge = `
+Verlässliches Wissen zur OP-Helper Mod:
+- OP-Helper ist eine clientseitige Fabric-Mod für Spieler auf opsucht.net.
+- Sie bietet Job-Tracking mit XP, Einnahmen, Fortschritt und Sitzungsstatistiken.
+- Sie zeigt Auktionsinformationen, Itempreise und Inventarwert-Zusammenfassungen in unterstützten Truhen-Ansichten.
+- Weitere Funktionen sind Seltenheitsfarben, optionale farbenblindfreundliche Kennzeichnungen, Talisman-Rucksack-Icons in Tooltips sowie anpassbare Menüs, Akzentfarben, Schriftarten, Sprache und Tooltip-Vorlesefunktion.
+- Das Einstellungsmenü wird mit /ophelper geöffnet. Geschützte Befehle wie /rename können eine Bestätigung verlangen.
+- OP-Helper unterstützt ausschließlich Fabric, nicht Forge oder NeoForge. Installation: passende OP-Helper-JAR in den Minecraft-mods-Ordner legen; Fabric Loader und Fabric API werden benötigt. Es darf nur eine zur Minecraft-Version passende OP-Helper-Datei installiert sein.
+- Für Minecraft 1.21.11 wird Java 21 benötigt; für 26.x-Versionen Java 25. Bei Problemen immer nach Minecraft-Version, OP-Helper-Datei, Fabric-Version, Fabric-API und Fehlermeldung fragen.
+- Preisangaben hängen von verfügbaren Auktions- und externen Daten ab. Fehlende oder Vergleichspreise nicht als exakte Werte ausgeben.
+- Erfinde keine weiteren Funktionen, Server-Plugins oder Unterstützung für andere Server.
+`.trim();
+
 function ticketPanelComponents(ticketChannelId, supportRoleId, notificationChannelId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -403,14 +415,22 @@ async function answerTicketWithGemini(message, ticket) {
   if (!config.geminiApiKey || message.author.id !== ticket.ownerId || ticketAiBusyThreads.has(message.channel.id)) return;
   ticketAiBusyThreads.add(message.channel.id);
   try {
-    const oldHistory = ticketAiHistory.get(message.channel.id) || [];
     const userText = message.content.trim().slice(0, 1800);
     if (!userText) return;
-    const conversationEntries = [...oldHistory, { role: 'Nutzer', text: userText }].slice(-6);
+    const recentMessages = await message.channel.messages.fetch({ limit: 20 });
+    const oldHistory = [...recentMessages.values()]
+      .filter(item => item.id !== message.id && item.content.trim() && item.embeds.length === 0)
+      .filter(item => item.author.id === ticket.ownerId || item.author.id === client.user.id)
+      .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+      .map(item => ({
+        role: item.author.id === ticket.ownerId ? 'Nutzer' : 'KI',
+        text: item.content.trim().slice(0, 1800)
+      }));
+    const conversationEntries = [...oldHistory, { role: 'Nutzer', text: userText }].slice(-8);
     const conversation = conversationEntries
       .map(entry => `${entry.role}: ${entry.text}`)
       .join('\n');
-    const prompt = `Du bist der freundliche deutsche KI-Assistent für Support-Tickets zur Minecraft-Mod „OP-Helper Mod“. Behandle jedes Anliegen zuerst als Mod-Support, nicht als Discord-, Plugin-, Hosting- oder allgemeines Server-Support-Thema. Nenne keine Plugins, Server-Einstellungen oder Mod-Funktionen, wenn die Person sie nicht selbst erwähnt hat. Erfinde keine Fakten, Anleitungen oder Zusagen. Wenn wichtige Informationen fehlen, frage gezielt nach Minecraft-Version, OP-Helper-Mod-Version, Mod-Loader, einer Fehlermeldung und den bereits versuchten Schritten. Du kannst keine Server-Einstellungen ändern, keine Konten prüfen und keine Aktionen ausführen. Antworte kurz, klar und auf Deutsch. Weise bei Bedarf darauf hin, dass das Support-Team das Ticket prüft.\n\nTicketverlauf:\n${conversation}`;
+    const prompt = `Du bist der freundliche deutsche KI-Assistent für Support-Tickets zur Minecraft-Mod „OP-Helper Mod“. Behandle jedes Anliegen zuerst als Mod-Support, nicht als Discord-, Plugin-, Hosting- oder allgemeines Server-Support-Thema. Nenne keine Plugins, Server-Einstellungen oder Mod-Funktionen, wenn die Person sie nicht selbst erwähnt hat. Nutze ausschließlich das untenstehende Wissen für konkrete Aussagen über die Mod. Lies den vollständigen Ticketverlauf sorgfältig: Frage niemals erneut nach einer Minecraft-Version, Mod-Version, Fehlermeldung oder anderen Angabe, die dort bereits genannt wurde. OP-Helper unterstützt nur Fabric; frage niemals nach Forge, NeoForge oder dem Mod-Loader. Falls wirklich etwas Wichtiges fehlt, stelle höchstens eine gezielte Rückfrage nach der noch fehlenden Minecraft-Version, exakten OP-Helper-Datei, vollständigen Fehlermeldung oder bereits versuchten Schritten. Erfinde keine Fakten, Anleitungen oder Zusagen. Du kannst keine Server-Einstellungen ändern, keine Konten prüfen und keine Aktionen ausführen. Antworte kurz, klar und auf Deutsch. Weise bei Bedarf darauf hin, dass das Support-Team das Ticket prüft.\n\n${opHelperKnowledge}\n\nTicketverlauf:\n${conversation}`;
     let response;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
@@ -432,7 +452,6 @@ async function answerTicketWithGemini(message, ticket) {
     const data = await response.json();
     const answer = extractGeminiText(data).slice(0, 1900);
     if (!answer) throw new Error('Gemini hat keine Textantwort geliefert');
-    ticketAiHistory.set(message.channel.id, [...conversationEntries, { role: 'KI', text: answer }].slice(-6));
     await message.channel.send({ content: answer, allowedMentions: { parse: [] } });
   } catch (error) {
     console.error('Ticket-KI konnte nicht antworten:', error.message);
