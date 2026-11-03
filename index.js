@@ -355,12 +355,57 @@ async function addSupportMembers(thread, guild, supportRoleId) {
     .map(member => thread.members.add(member.id).catch(() => null)));
 }
 
-async function getTicketSupportRoleId(thread) {
+async function getTicketRouting(thread) {
   const messages = await thread.messages.fetch({ limit: 20 });
   const openingMessage = messages.find(message =>
     message.author.id === client.user.id && message.components.some(row =>
-      row.components.some(component => component.customId === 'ticket:close')));
-  return openingMessage?.mentions.roles.first()?.id;
+      row.components.some(component => component.customId?.startsWith('ticket:close'))));
+  const closeButton = openingMessage?.components
+    .flatMap(row => row.components)
+    .find(component => component.customId?.startsWith('ticket:close'));
+  const [, , buttonSupportRoleId = 'none', notificationChannelId = 'none'] = (closeButton?.customId || '').split(':');
+  return {
+    supportRoleId: buttonSupportRoleId !== 'none' ? buttonSupportRoleId : openingMessage?.mentions.roles.first()?.id,
+    notificationChannelId: notificationChannelId !== 'none' ? notificationChannelId : null
+  };
+}
+
+async function getTicketSupportRoleId(thread) {
+  return (await getTicketRouting(thread)).supportRoleId;
+}
+
+async function forwardTicketToTeam(thread, ticket, summary) {
+  const routing = await getTicketRouting(thread);
+  if (!routing.notificationChannelId) return false;
+  const notificationChannel = await thread.guild.channels.fetch(routing.notificationChannelId).catch(() => null);
+  if (!notificationChannel?.isTextBased()) return false;
+  const messages = await notificationChannel.messages.fetch({ limit: 50 });
+  const notification = messages.find(message => message.components.some(row =>
+    row.components.some(component => component.customId === `ticket:join:${thread.id}:${routing.supportRoleId || 'none'}`)));
+  if (!notification) return false;
+  const button = notification.components.flatMap(row => row.components)
+    .find(component => component.customId?.startsWith('ticket:join:'));
+  if (button?.label === 'Ticket übernehmen') return false;
+
+  await notification.edit({
+    content: routing.supportRoleId ? `<@&${routing.supportRoleId}>` : undefined,
+    embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Ticket wartet auf Übernahme')
+      .setDescription('Die Ticket-KI hat das erste Anliegen aufgenommen. Übernimm das Ticket, um direkt zu helfen.')
+      .addFields(
+        { name: 'Ticket', value: `<#${thread.id}>` },
+        { name: 'Anliegen', value: summary.slice(0, 900) || 'Kein Text angegeben.' }
+      )
+      .setTimestamp()],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`ticket:join:${thread.id}:${routing.supportRoleId || 'none'}`)
+        .setLabel('Ticket übernehmen')
+        .setEmoji('📩')
+        .setStyle(ButtonStyle.Success)
+    )],
+    allowedMentions: routing.supportRoleId ? { roles: [routing.supportRoleId] } : { parse: [] }
+  });
+  return true;
 }
 
 async function closeTicket(thread, ticket) {
@@ -453,9 +498,15 @@ async function answerTicketWithGemini(message, ticket) {
     const answer = extractGeminiText(data).slice(0, 1900);
     if (!answer) throw new Error('Gemini hat keine Textantwort geliefert');
     await message.channel.send({ content: answer, allowedMentions: { parse: [] } });
+    if (await forwardTicketToTeam(message.channel, ticket, userText)) {
+      await message.channel.send('✅ Ich habe dein Anliegen für das Support-Team zusammengefasst. Ein Teammitglied kann das Ticket jetzt übernehmen.');
+    }
   } catch (error) {
     console.error('Ticket-KI konnte nicht antworten:', error.message);
     await message.channel.send('Die Ticket-KI ist gerade nicht erreichbar. Ein Teammitglied kann dein Anliegen trotzdem bearbeiten.').catch(() => null);
+    if (await forwardTicketToTeam(message.channel, ticket, userText).catch(() => false)) {
+      await message.channel.send('✅ Ich habe dein Anliegen trotzdem an das Support-Team weitergeleitet.').catch(() => null);
+    }
   } finally {
     ticketAiBusyThreads.delete(message.channel.id);
   }
@@ -634,7 +685,7 @@ client.on(Events.InteractionCreate, async interaction => {
             : 'Beschreibe dein Anliegen so genau wie möglich. Ein Teammitglied meldet sich hier.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.')
           .setTimestamp()],
         components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('ticket:close').setLabel('Schließung vorschlagen').setEmoji('🔒').setStyle(ButtonStyle.Primary)
+          new ButtonBuilder().setCustomId(`ticket:close:${supportRoleId}:${notificationChannelId}`).setLabel('Schließung vorschlagen').setEmoji('🔒').setStyle(ButtonStyle.Primary)
         )],
         allowedMentions: supportRoleId !== 'none'
           ? { roles: [supportRoleId], users: [interaction.user.id] }
@@ -679,16 +730,31 @@ client.on(Events.InteractionCreate, async interaction => {
     }
     try {
       await ticketChannel.members.add(interaction.user.id);
+      if (interaction.component.label === 'Ticket übernehmen') {
+        await interaction.update({
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`ticket:join:${ticketChannel.id}:${supportRoleId}`)
+              .setLabel(`Übernommen von ${interaction.user.username}`.slice(0, 80))
+              .setEmoji('✅')
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(true)
+          )]
+        });
+        await ticketChannel.send(`📩 ${interaction.user} hat dieses Ticket übernommen.`);
+        return;
+      }
       return interaction.reply({ content: `Du bist dem Ticket beigetreten: <#${ticketChannel.id}>`, ephemeral: true });
     } catch (error) {
       return interaction.reply({ content: `Beitritt zum Ticket fehlgeschlagen: ${error.message}`, ephemeral: true });
     }
   }
 
-  if (interaction.isButton() && interaction.customId === 'ticket:close') {
+  if (interaction.isButton() && interaction.customId.startsWith('ticket:close')) {
     const ticket = parseTicketThread(interaction.channel);
     if (!ticket || ticket.state !== 'offen') return interaction.reply({ content: 'Dieses Ticket ist bereits geschlossen oder ungültig.', ephemeral: true });
-    const supportRoleId = interaction.message.mentions.roles.first()?.id;
+    const [, , buttonSupportRoleId = 'none'] = interaction.customId.split(':');
+    const supportRoleId = buttonSupportRoleId !== 'none' ? buttonSupportRoleId : interaction.message.mentions.roles.first()?.id;
     if (!isTicketTeam(interaction, supportRoleId)) {
       return interaction.reply({ content: 'Nur das Support-Team kann einen Schließungsvorschlag senden.', ephemeral: true });
     }
