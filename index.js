@@ -46,7 +46,9 @@ const config = {
   tempVoiceLobbyId: process.env.TEMP_VOICE_LOBBY_ID,
   tempVoiceCategoryId: process.env.TEMP_VOICE_CATEGORY_ID,
   rulesChannelId: process.env.RULES_CHANNEL_ID || '1554115823759785984',
-  legacyMemberRoleName: process.env.LEGACY_MEMBER_ROLE_NAME || 'Mitglied'
+  legacyMemberRoleName: process.env.LEGACY_MEMBER_ROLE_NAME || 'Mitglied',
+  geminiApiKey: process.env.GEMINI_API_KEY,
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash'
 };
 
 if (!['delete', 'timeout', 'ban'].includes(config.filterAction)) {
@@ -139,6 +141,8 @@ const commands = [
 
 const streamerStatus = new Map();
 const temporaryVoiceOwners = new Map();
+const ticketAiHistory = new Map();
+const ticketAiBusyThreads = new Set();
 let twitchAccessToken;
 let twitchAccessTokenExpiresAt = 0;
 
@@ -385,6 +389,54 @@ async function requestTicketClose(thread, ticket, requester) {
   return true;
 }
 
+function extractGeminiText(response) {
+  return response.steps
+    ?.filter(step => step.type === 'model_output')
+    .flatMap(step => step.content || [])
+    .filter(content => content.type === 'text')
+    .map(content => content.text)
+    .join('\n')
+    .trim();
+}
+
+async function answerTicketWithGemini(message, ticket) {
+  if (!config.geminiApiKey || message.author.id !== ticket.ownerId || ticketAiBusyThreads.has(message.channel.id)) return;
+  ticketAiBusyThreads.add(message.channel.id);
+  try {
+    const oldHistory = ticketAiHistory.get(message.channel.id) || [];
+    const userText = message.content.trim().slice(0, 1800);
+    if (!userText) return;
+    const conversationEntries = [...oldHistory, { role: 'Nutzer', text: userText }].slice(-6);
+    const conversation = conversationEntries
+      .map(entry => `${entry.role}: ${entry.text}`)
+      .join('\n');
+    const prompt = `Du bist der freundliche deutsche KI-Assistent eines Discord-Support-Tickets. Hilf nur beim Verstehen und beim Formulieren einer Lösung. Du kannst keine Server-Einstellungen ändern, keine Konten prüfen und keine Aktionen ausführen. Erfinde keine Fakten oder Zusagen. Antworte kurz, klar und auf Deutsch. Bitte bei fehlenden Informationen gezielt nachfragen. Weise bei Bedarf darauf hin, dass das Support-Team das Ticket prüft.\n\nTicketverlauf:\n${conversation}`;
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+      method: 'POST',
+      headers: {
+        'x-goog-api-key': config.geminiApiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: config.geminiModel,
+        store: false,
+        input: prompt
+      })
+    });
+    if (!response.ok) throw new Error(`Gemini-Anfrage fehlgeschlagen (HTTP ${response.status})`);
+    const data = await response.json();
+    const answer = extractGeminiText(data).slice(0, 1900);
+    if (!answer) throw new Error('Gemini hat keine Textantwort geliefert');
+    ticketAiHistory.set(message.channel.id, [...conversationEntries, { role: 'KI', text: answer }].slice(-6));
+    await message.channel.send({ content: answer, allowedMentions: { parse: [] } });
+  } catch (error) {
+    console.error('Ticket-KI konnte nicht antworten:', error.message);
+    await message.channel.send('Die Ticket-KI ist gerade nicht erreichbar. Ein Teammitglied kann dein Anliegen trotzdem bearbeiten.').catch(() => null);
+  } finally {
+    ticketAiBusyThreads.delete(message.channel.id);
+  }
+}
+
 client.once(Events.ClientReady, async readyClient => {
   console.log(`Angemeldet als ${readyClient.user.tag}`);
   if (config.tempVoiceLobbyId) {
@@ -461,27 +513,30 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 });
 
 client.on(Events.MessageCreate, async message => {
-  if (!message.guild || message.author.bot || !config.bannedTerms.length) return;
-  // Teammitglieder werden nicht automatisch sanktioniert; ihre Nachrichten bleiben nachvollziehbar.
-  if (message.member?.permissions.has(PermissionFlagsBits.ModerateMembers)) return;
-  const matchedTerm = config.bannedTerms.find(term => message.content.toLowerCase().includes(term));
-  if (!matchedTerm) return;
-
-  await message.delete().catch(console.error);
-  const member = message.member;
-  let result = 'Nachricht gelöscht';
-  if (config.filterAction === 'timeout' && member?.moderatable) {
-    await member.timeout(config.timeoutMinutes * 60_000, `Filtertreffer: ${matchedTerm}`);
-    result += `; Timeout für ${config.timeoutMinutes} Minuten`;
-  } else if (config.filterAction === 'ban' && member?.bannable) {
-    await member.ban({ reason: `Filtertreffer: ${matchedTerm}`, deleteMessageSeconds: 0 });
-    result += '; Mitglied gebannt';
+  if (!message.guild || message.author.bot) return;
+  if (config.bannedTerms.length && !message.member?.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+    const matchedTerm = config.bannedTerms.find(term => message.content.toLowerCase().includes(term));
+    if (matchedTerm) {
+      await message.delete().catch(console.error);
+      const member = message.member;
+      let result = 'Nachricht gelöscht';
+      if (config.filterAction === 'timeout' && member?.moderatable) {
+        await member.timeout(config.timeoutMinutes * 60_000, `Filtertreffer: ${matchedTerm}`);
+        result += `; Timeout für ${config.timeoutMinutes} Minuten`;
+      } else if (config.filterAction === 'ban' && member?.bannable) {
+        await member.ban({ reason: `Filtertreffer: ${matchedTerm}`, deleteMessageSeconds: 0 });
+        result += '; Mitglied gebannt';
+      }
+      await logModeration(message.guild, 'Automoderation', [
+        { name: 'Mitglied', value: `${message.author.tag} (${message.author.id})` },
+        { name: 'Aktion', value: result },
+        { name: 'Regel', value: `Filtertreffer: ${matchedTerm}` }
+      ]);
+      return;
+    }
   }
-  await logModeration(message.guild, 'Automoderation', [
-    { name: 'Mitglied', value: `${message.author.tag} (${message.author.id})` },
-    { name: 'Aktion', value: result },
-    { name: 'Regel', value: `Filtertreffer: ${matchedTerm}` }
-  ]);
+  const ticket = parseTicketThread(message.channel);
+  if (ticket?.state === 'offen') await answerTicketWithGemini(message, ticket);
 });
 
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
@@ -550,7 +605,9 @@ client.on(Events.InteractionCreate, async interaction => {
       await ticket.send({
         content: `${interaction.user}${supportRoleId !== 'none' ? ` <@&${supportRoleId}>` : ''}`,
         embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(`${ticketTypes[ticketType].label}-Ticket`)
-          .setDescription('Beschreibe dein Anliegen so genau wie möglich. Ein Teammitglied meldet sich hier.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.')
+          .setDescription(config.geminiApiKey
+            ? 'Hallo! Beschreibe dein Anliegen so genau wie möglich. Die Ticket-KI hilft dir direkt bei der Einordnung; ein Teammitglied kann jederzeit übernehmen.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.'
+            : 'Beschreibe dein Anliegen so genau wie möglich. Ein Teammitglied meldet sich hier.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.')
           .setTimestamp()],
         components: [new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId('ticket:close').setLabel('Schließung vorschlagen').setEmoji('🔒').setStyle(ButtonStyle.Primary)
