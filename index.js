@@ -48,7 +48,7 @@ const config = {
   rulesChannelId: process.env.RULES_CHANNEL_ID || '1554115823759785984',
   legacyMemberRoleName: process.env.LEGACY_MEMBER_ROLE_NAME || 'Mitglied',
   geminiApiKey: process.env.GEMINI_API_KEY,
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash'
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'
 };
 
 if (!['delete', 'timeout', 'ban'].includes(config.filterAction)) {
