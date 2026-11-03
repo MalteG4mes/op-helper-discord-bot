@@ -410,7 +410,7 @@ async function answerTicketWithGemini(message, ticket) {
     const conversation = conversationEntries
       .map(entry => `${entry.role}: ${entry.text}`)
       .join('\n');
-    const prompt = `Du bist der freundliche deutsche KI-Assistent eines Discord-Support-Tickets. Hilf nur beim Verstehen und beim Formulieren einer Lösung. Du kannst keine Server-Einstellungen ändern, keine Konten prüfen und keine Aktionen ausführen. Erfinde keine Fakten oder Zusagen. Antworte kurz, klar und auf Deutsch. Bitte bei fehlenden Informationen gezielt nachfragen. Weise bei Bedarf darauf hin, dass das Support-Team das Ticket prüft.\n\nTicketverlauf:\n${conversation}`;
+    const prompt = `Du bist der freundliche deutsche KI-Assistent für Support-Tickets zur Minecraft-Mod „OP-Helper Mod“. Behandle jedes Anliegen zuerst als Mod-Support, nicht als Discord-, Plugin-, Hosting- oder allgemeines Server-Support-Thema. Nenne keine Plugins, Server-Einstellungen oder Mod-Funktionen, wenn die Person sie nicht selbst erwähnt hat. Erfinde keine Fakten, Anleitungen oder Zusagen. Wenn wichtige Informationen fehlen, frage gezielt nach Minecraft-Version, OP-Helper-Mod-Version, Mod-Loader, einer Fehlermeldung und den bereits versuchten Schritten. Du kannst keine Server-Einstellungen ändern, keine Konten prüfen und keine Aktionen ausführen. Antworte kurz, klar und auf Deutsch. Weise bei Bedarf darauf hin, dass das Support-Team das Ticket prüft.\n\nTicketverlauf:\n${conversation}`;
     let response;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
