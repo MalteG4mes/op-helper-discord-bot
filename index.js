@@ -93,12 +93,12 @@ const commands = [
     .addSubcommand(subcommand => subcommand
       .setName('setup')
       .setDescription('Erstellt das Ticket-Auswahlmenü in diesem Kanal')
-      .addRoleOption(option => option.setName('supportrolle').setDescription('Rolle, die Tickets bearbeiten darf'))
       .addChannelOption(option => option
         .setName('benachrichtigungskanal')
         .setDescription('Kanal, in dem das Team neue Tickets sieht und beitritt')
         .setRequired(true)
-        .addChannelTypes(ChannelType.GuildText)))
+        .addChannelTypes(ChannelType.GuildText))
+      .addRoleOption(option => option.setName('supportrolle').setDescription('Rolle, die Tickets bearbeiten darf')))
     .addSubcommand(subcommand => subcommand
       .setName('close')
       .setDescription('Schließt das Ticket in diesem Thread'))
@@ -411,18 +411,23 @@ async function answerTicketWithGemini(message, ticket) {
       .map(entry => `${entry.role}: ${entry.text}`)
       .join('\n');
     const prompt = `Du bist der freundliche deutsche KI-Assistent eines Discord-Support-Tickets. Hilf nur beim Verstehen und beim Formulieren einer Lösung. Du kannst keine Server-Einstellungen ändern, keine Konten prüfen und keine Aktionen ausführen. Erfinde keine Fakten oder Zusagen. Antworte kurz, klar und auf Deutsch. Bitte bei fehlenden Informationen gezielt nachfragen. Weise bei Bedarf darauf hin, dass das Support-Team das Ticket prüft.\n\nTicketverlauf:\n${conversation}`;
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
-      method: 'POST',
-      headers: {
-        'x-goog-api-key': config.geminiApiKey,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: config.geminiModel,
-        store: false,
-        input: prompt
-      })
-    });
+    let response;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': config.geminiApiKey,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: config.geminiModel,
+          store: false,
+          input: prompt
+        })
+      });
+      if (response.ok || (response.status !== 429 && response.status < 500) || attempt === 2) break;
+      await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
     if (!response.ok) throw new Error(`Gemini-Anfrage fehlgeschlagen (HTTP ${response.status})`);
     const data = await response.json();
     const answer = extractGeminiText(data).slice(0, 1900);
