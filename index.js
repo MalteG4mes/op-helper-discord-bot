@@ -398,19 +398,21 @@ async function forwardTicketToTeam(thread, ticket, summary) {
   const notificationChannel = await thread.guild.channels.fetch(notificationChannelId).catch(() => null);
   if (!notificationChannel?.isTextBased()) return false;
   const messages = await notificationChannel.messages.fetch({ limit: 50 });
+  // Ältere Ticket-Panels können noch eine falsche Rolle in der Button-ID
+  // enthalten. Deshalb reicht die Thread-ID zum Wiederfinden aus.
   const notification = messages.find(message => message.components.some(row =>
-    row.components.some(component => component.customId === `ticket:join:${thread.id}:${routing.supportRoleId || 'none'}`)));
-  if (!notification) return false;
-  const button = notification.components.flatMap(row => row.components)
+    row.components.some(component => component.customId?.startsWith(`ticket:join:${thread.id}:`))));
+  const button = notification?.components.flatMap(row => row.components)
     .find(component => component.customId?.startsWith('ticket:join:'));
   if (button?.label === 'Ticket übernehmen') return false;
 
-  await notification.edit({
+  const forwardedTicket = {
     content: teamRoleId ? `<@&${teamRoleId}>` : undefined,
     embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Ticket wartet auf Übernahme')
       .setDescription('Die Ticket-KI hat das erste Anliegen aufgenommen. Übernimm das Ticket, um direkt zu helfen.')
       .addFields(
         { name: 'Ticket', value: `<#${thread.id}>` },
+        { name: 'Erstellt von', value: `<@${ticket.ownerId}>` },
         { name: 'Anliegen', value: summary.slice(0, 900) || 'Kein Text angegeben.' }
       )
       .setTimestamp()],
@@ -422,7 +424,11 @@ async function forwardTicketToTeam(thread, ticket, summary) {
         .setStyle(ButtonStyle.Success)
     )],
     allowedMentions: teamRoleId ? { roles: [teamRoleId] } : { parse: [] }
-  });
+  };
+  // Falls ein sehr altes Ticket keine ursprüngliche Team-Nachricht hat,
+  // wird eine neue mit denselben Informationen erzeugt.
+  if (notification) await notification.edit(forwardedTicket);
+  else await notificationChannel.send(forwardedTicket);
   return true;
 }
 
@@ -483,6 +489,7 @@ function teamMention(guild) {
 async function answerTicketWithGemini(message, ticket) {
   if (!config.geminiApiKey || message.author.id !== ticket.ownerId || ticketAiBusyThreads.has(message.channel.id)) return;
   ticketAiBusyThreads.add(message.channel.id);
+  let typingRefresh;
   try {
     const userText = message.content.trim().slice(0, 1800);
     if (!userText) return;
@@ -493,22 +500,26 @@ async function answerTicketWithGemini(message, ticket) {
         ticketSummaryConfirmations.delete(message.channel.id);
         const wasForwarded = await forwardTicketToTeam(message.channel, ticket, pendingConfirmation.summary);
         const teamRoleId = getConfiguredTeamRoleId(message.guild);
-        await message.channel.send({
+        await message.reply({
           content: wasForwarded
             ? `✅ Danke für die Bestätigung. Ich leite dein Ticket jetzt an ${teamMention(message.guild)} weiter. Ein Teammitglied wird sich darum kümmern.`
             : '✅ Danke für die Bestätigung. Dein Anliegen bleibt für das Support-Team im Ticket sichtbar.',
-          allowedMentions: wasForwarded && teamRoleId ? { roles: [teamRoleId] } : { parse: [] }
+          allowedMentions: wasForwarded && teamRoleId ? { roles: [teamRoleId], repliedUser: false } : { parse: [], repliedUser: false }
         });
         return;
       }
       if (['nein', 'n', 'no'].includes(answer)) {
         ticketSummaryConfirmations.delete(message.channel.id);
-        await message.channel.send('Kein Problem. Schreibe bitte, was an der Zusammenfassung nicht stimmt oder ergänze die fehlenden Angaben. Ich fasse es danach erneut zusammen.');
+        await message.reply({ content: 'Kein Problem. Schreibe bitte, was an der Zusammenfassung nicht stimmt oder ergänze die fehlenden Angaben. Ich fasse es danach erneut zusammen.', allowedMentions: { repliedUser: false } });
         return;
       }
-      await message.channel.send('Bitte antworte auf die Zusammenfassung nur mit **Ja** oder **Nein**.');
+      await message.reply({ content: 'Bitte antworte auf die Zusammenfassung nur mit **Ja** oder **Nein**.', allowedMentions: { repliedUser: false } });
       return;
     }
+    // Der Indikator verschwindet nach wenigen Sekunden. Daher wird er bei
+    // längeren Gemini-Anfragen regelmäßig erneuert.
+    await message.channel.sendTyping().catch(() => null);
+    typingRefresh = setInterval(() => message.channel.sendTyping().catch(() => null), 7_000);
     const recentMessages = await message.channel.messages.fetch({ limit: 20 });
     const oldHistory = [...recentMessages.values()]
       .filter(item => item.id !== message.id && item.content.trim() && item.embeds.length === 0)
@@ -548,19 +559,21 @@ async function answerTicketWithGemini(message, ticket) {
     if (summaryMatch) {
       const summary = summaryMatch[1].trim().slice(0, 1800);
       ticketSummaryConfirmations.set(message.channel.id, { summary });
-      await message.channel.send({
+      await message.reply({
         embeds: [new EmbedBuilder().setColor(0xFEE75C).setTitle('Zusammenfassung deines Anliegens')
           .setDescription(summary)
           .setFooter({ text: 'Stimmt das? Antworte bitte mit Ja oder Nein.' })
-          .setTimestamp()]
+          .setTimestamp()],
+        allowedMentions: { repliedUser: false }
       });
       return;
     }
-    await message.channel.send({ content: answer, allowedMentions: { parse: [] } });
+    await message.reply({ content: answer, allowedMentions: { parse: [], repliedUser: false } });
   } catch (error) {
     console.error('Ticket-KI konnte nicht antworten:', error.message);
-    await message.channel.send('Die Ticket-KI ist gerade nicht erreichbar. Ein Teammitglied kann dein Anliegen trotzdem bearbeiten.').catch(() => null);
+    await message.reply({ content: 'Die Ticket-KI ist gerade nicht erreichbar. Ein Teammitglied kann dein Anliegen trotzdem bearbeiten.', allowedMentions: { repliedUser: false } }).catch(() => null);
   } finally {
+    if (typingRefresh) clearInterval(typingRefresh);
     ticketAiBusyThreads.delete(message.channel.id);
   }
 }
