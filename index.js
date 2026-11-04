@@ -26,8 +26,10 @@ const streamers = [
   { login: 'kaledoss', displayName: 'Kaledoss' },
   { login: 'muecke0702', displayName: 'Muecke0702' },
   { login: 'roggberd', displayName: 'Roggberd' },
-  { login: 'scusy', displayName: 'Scusy' },
-  { login: 'xxlukas', displayName: 'XxLukas' }
+  { login: 'scusytv', displayName: 'ScusyTV' },
+  { login: 'xxlukaas_', displayName: 'XxLukas' },
+  { login: 'ccatched', displayName: 'ccatched' },
+  { login: 'simontheking799', displayName: 'Simontheking799' }
 ].map(streamer => ({ ...streamer, roleName: `Stream-Ping: ${streamer.displayName}` }));
 
 const config = {
@@ -50,6 +52,7 @@ const config = {
   ticketNotificationChannelId: process.env.TICKET_NOTIFICATION_CHANNEL_ID || '1554508707138764800',
   geminiApiKey: process.env.GEMINI_API_KEY,
   geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+  teamRoleName: process.env.TEAM_ROLE_NAME || 'Team',
   // Kann bei einem neuen Mod-Release bei Railway als MOD_SUPPORTED_VERSIONS
   // angepasst werden, ohne den Bot-Code erneut ändern zu müssen.
   supportedModVersions: process.env.MOD_SUPPORTED_VERSIONS || '1.21.11, 26.1, 26.1.1, 26.2, 26.3'
@@ -345,6 +348,11 @@ function isTicketSupport(interaction, supportRoleId) {
   return supportRoleId && interaction.member.roles?.cache.has(supportRoleId);
 }
 
+function getConfiguredTeamRoleId(guild) {
+  // Die Rolle kann in Discord unterschiedlich groß geschrieben sein, z. B. "TEAM".
+  return guild.roles.cache.find(role => role.name.toLowerCase() === config.teamRoleName.toLowerCase())?.id || null;
+}
+
 function canManageTicket(interaction, ticket, supportRoleId) {
   return interaction.user.id === ticket.ownerId || isTicketSupport(interaction, supportRoleId) ||
     interaction.memberPermissions?.has(PermissionFlagsBits.ManageThreads) ||
@@ -381,6 +389,9 @@ async function getTicketSupportRoleId(thread) {
 
 async function forwardTicketToTeam(thread, ticket, summary) {
   const routing = await getTicketRouting(thread);
+  // Alte Ticket-Panels können noch "Discord Serverleitung" enthalten. Für die
+  // tatsächliche Weiterleitung zählt deshalb immer die feste Discord-Rolle Team.
+  const teamRoleId = getConfiguredTeamRoleId(thread.guild);
   const notificationChannelId = config.ticketNotificationChannelId || routing.notificationChannelId;
   if (!notificationChannelId) return false;
   const notificationChannel = await thread.guild.channels.fetch(notificationChannelId).catch(() => null);
@@ -394,7 +405,7 @@ async function forwardTicketToTeam(thread, ticket, summary) {
   if (button?.label === 'Ticket übernehmen') return false;
 
   await notification.edit({
-    content: routing.supportRoleId ? `<@&${routing.supportRoleId}>` : undefined,
+    content: teamRoleId ? `<@&${teamRoleId}>` : undefined,
     embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Ticket wartet auf Übernahme')
       .setDescription('Die Ticket-KI hat das erste Anliegen aufgenommen. Übernimm das Ticket, um direkt zu helfen.')
       .addFields(
@@ -404,12 +415,12 @@ async function forwardTicketToTeam(thread, ticket, summary) {
       .setTimestamp()],
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`ticket:join:${thread.id}:${routing.supportRoleId || 'none'}`)
+        .setCustomId(`ticket:join:${thread.id}:${teamRoleId || 'none'}`)
         .setLabel('Ticket übernehmen')
         .setEmoji('📩')
         .setStyle(ButtonStyle.Success)
     )],
-    allowedMentions: routing.supportRoleId ? { roles: [routing.supportRoleId] } : { parse: [] }
+    allowedMentions: teamRoleId ? { roles: [teamRoleId] } : { parse: [] }
   });
   return true;
 }
@@ -424,7 +435,8 @@ async function closeTicket(thread, ticket) {
 }
 
 function isTicketTeam(interaction, supportRoleId) {
-  return isTicketSupport(interaction, supportRoleId) ||
+  const configuredTeamRoleId = getConfiguredTeamRoleId(interaction.guild);
+  return isTicketSupport(interaction, configuredTeamRoleId) || isTicketSupport(interaction, supportRoleId) ||
     interaction.memberPermissions?.has(PermissionFlagsBits.ManageThreads) ||
     interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels);
 }
@@ -473,8 +485,9 @@ function requestsTeamForwarding(text) {
   return /\b(weiter ?leit\w*|an (?:das )?team(?: weiter)?|team (?:bitte )?(?:holen|informieren|benachrichtigen)|menschlich(?:en)? support)\b/.test(normalized);
 }
 
-function teamMention(supportRoleId) {
-  return supportRoleId ? `<@&${supportRoleId}>` : 'das Support-Team';
+function teamMention(guild) {
+  const roleId = getConfiguredTeamRoleId(guild);
+  return roleId ? `<@&${roleId}>` : 'das Support-Team';
 }
 
 async function answerTicketWithGemini(message, ticket) {
@@ -486,9 +499,10 @@ async function answerTicketWithGemini(message, ticket) {
     const routing = await getTicketRouting(message.channel);
     if (requestsTeamForwarding(userText)) {
       await forwardTicketToTeam(message.channel, ticket, userText);
+      const teamRoleId = getConfiguredTeamRoleId(message.guild);
       await message.channel.send({
-        content: `✅ Ich leite dein Ticket an ${teamMention(routing.supportRoleId)} weiter. Ein Teammitglied wird sich darum kümmern.`,
-        allowedMentions: routing.supportRoleId ? { roles: [routing.supportRoleId] } : { parse: [] }
+        content: `✅ Ich leite dein Ticket an ${teamMention(message.guild)} weiter. Ein Teammitglied wird sich darum kümmern.`,
+        allowedMentions: teamRoleId ? { roles: [teamRoleId] } : { parse: [] }
       });
       return;
     }
@@ -685,6 +699,11 @@ client.on(Events.InteractionCreate, async interaction => {
 
   if ((interaction.isStringSelectMenu() || interaction.isButton()) && interaction.customId.startsWith('ticket:create:')) {
     const [, , ticketChannelId, supportRoleId = 'none', notificationChannelId = 'none'] = interaction.customId.split(':');
+    // Neue Tickets verwenden immer die Rolle "Team", sofern sie vorhanden ist.
+    // Dadurch wird eine versehentlich beim Setup gewählte Serverleitungs-Rolle
+    // nicht mehr angepingt.
+    const teamRoleId = getConfiguredTeamRoleId(interaction.guild) || (supportRoleId === 'none' ? null : supportRoleId);
+    const ticketTeamRoleId = teamRoleId || 'none';
     const ticketChannel = await interaction.guild.channels.fetch(ticketChannelId).catch(() => null);
     if (!ticketChannel?.isTextBased() || !ticketChannel.threads) {
       return interaction.reply({ content: 'Der Ticket-Kanal wurde nicht gefunden.', ephemeral: true });
@@ -708,17 +727,17 @@ client.on(Events.InteractionCreate, async interaction => {
       });
       await ticket.members.add(interaction.user.id);
       await ticket.send({
-        content: `${interaction.user}${supportRoleId !== 'none' ? ` <@&${supportRoleId}>` : ''}`,
+        content: `${interaction.user}${ticketTeamRoleId !== 'none' ? ` <@&${ticketTeamRoleId}>` : ''}`,
         embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(`${ticketTypes[ticketType].label}-Ticket`)
           .setDescription(config.geminiApiKey
             ? `Hallo ${interaction.user}! Ich bin die Ticket-KI. Bitte nenne mir dein Anliegen möglichst genau, dann helfe ich dir bei der Einordnung. Ein Teammitglied kann jederzeit übernehmen. Schreibe **„bitte weiterleiten“**, wenn du direkt an das Support-Team übergeben werden möchtest.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.`
             : 'Beschreibe dein Anliegen so genau wie möglich. Ein Teammitglied meldet sich hier.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.')
           .setTimestamp()],
         components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`ticket:close:${supportRoleId}:${notificationChannelId}`).setLabel('Schließung vorschlagen').setEmoji('🔒').setStyle(ButtonStyle.Primary)
+          new ButtonBuilder().setCustomId(`ticket:close:${ticketTeamRoleId}:${notificationChannelId}`).setLabel('Schließung vorschlagen').setEmoji('🔒').setStyle(ButtonStyle.Primary)
         )],
-        allowedMentions: supportRoleId !== 'none'
-          ? { roles: [supportRoleId], users: [interaction.user.id] }
+        allowedMentions: ticketTeamRoleId !== 'none'
+          ? { roles: [ticketTeamRoleId], users: [interaction.user.id] }
           : { users: [interaction.user.id] }
       });
       const teamNotificationChannelId = config.ticketNotificationChannelId || notificationChannelId;
@@ -726,19 +745,19 @@ client.on(Events.InteractionCreate, async interaction => {
         const notificationChannel = await interaction.guild.channels.fetch(teamNotificationChannelId).catch(() => null);
         if (notificationChannel?.isTextBased()) {
           await notificationChannel.send({
-            content: supportRoleId !== 'none' ? `<@&${supportRoleId}>` : undefined,
+            content: ticketTeamRoleId !== 'none' ? `<@&${ticketTeamRoleId}>` : undefined,
             embeds: [new EmbedBuilder().setColor(0xFEE75C).setTitle('Neues Ticket')
               .setDescription(`${interaction.user} hat ein neues Ticket erstellt. Klicke auf den Button, um dem privaten Ticket beizutreten.`)
               .addFields({ name: 'Ticket', value: `<#${ticket.id}>` })
               .setTimestamp()],
             components: [new ActionRowBuilder().addComponents(
               new ButtonBuilder()
-                .setCustomId(`ticket:join:${ticket.id}:${supportRoleId}`)
+                .setCustomId(`ticket:join:${ticket.id}:${ticketTeamRoleId}`)
                 .setLabel('Ticket beitreten')
                 .setEmoji('📩')
                 .setStyle(ButtonStyle.Success)
             )],
-            allowedMentions: supportRoleId !== 'none' ? { roles: [supportRoleId] } : { parse: [] }
+            allowedMentions: ticketTeamRoleId !== 'none' ? { roles: [ticketTeamRoleId] } : { parse: [] }
           });
         }
       }
