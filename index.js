@@ -47,6 +47,7 @@ const config = {
   tempVoiceCategoryId: process.env.TEMP_VOICE_CATEGORY_ID,
   rulesChannelId: process.env.RULES_CHANNEL_ID || '1554115823759785984',
   legacyMemberRoleName: process.env.LEGACY_MEMBER_ROLE_NAME || 'Mitglied',
+  ticketNotificationChannelId: process.env.TICKET_NOTIFICATION_CHANNEL_ID || '1554508707138764800',
   geminiApiKey: process.env.GEMINI_API_KEY,
   geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'
 };
@@ -376,8 +377,9 @@ async function getTicketSupportRoleId(thread) {
 
 async function forwardTicketToTeam(thread, ticket, summary) {
   const routing = await getTicketRouting(thread);
-  if (!routing.notificationChannelId) return false;
-  const notificationChannel = await thread.guild.channels.fetch(routing.notificationChannelId).catch(() => null);
+  const notificationChannelId = config.ticketNotificationChannelId || routing.notificationChannelId;
+  if (!notificationChannelId) return false;
+  const notificationChannel = await thread.guild.channels.fetch(notificationChannelId).catch(() => null);
   if (!notificationChannel?.isTextBased()) return false;
   const messages = await notificationChannel.messages.fetch({ limit: 50 });
   const notification = messages.find(message => message.components.some(row =>
@@ -456,12 +458,36 @@ function extractGeminiText(response) {
     .trim();
 }
 
+function requestsTeamForwarding(text) {
+  // Absichtlich tolerant: Schreibfehler wie "weiter leiten" oder
+  // "weitergeleitet" sollen genauso funktionieren.
+  const normalized = String(text)
+    .toLowerCase()
+    .replace(/[^a-zäöüß]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return /\b(weiter ?leit\w*|an (?:das )?team(?: weiter)?|team (?:bitte )?(?:holen|informieren|benachrichtigen)|menschlich(?:en)? support)\b/.test(normalized);
+}
+
+function teamMention(supportRoleId) {
+  return supportRoleId ? `<@&${supportRoleId}>` : 'das Support-Team';
+}
+
 async function answerTicketWithGemini(message, ticket) {
   if (!config.geminiApiKey || message.author.id !== ticket.ownerId || ticketAiBusyThreads.has(message.channel.id)) return;
   ticketAiBusyThreads.add(message.channel.id);
   try {
     const userText = message.content.trim().slice(0, 1800);
     if (!userText) return;
+    const routing = await getTicketRouting(message.channel);
+    if (requestsTeamForwarding(userText)) {
+      await forwardTicketToTeam(message.channel, ticket, userText);
+      await message.channel.send({
+        content: `✅ Ich leite dein Ticket an ${teamMention(routing.supportRoleId)} weiter. Ein Teammitglied wird sich darum kümmern.`,
+        allowedMentions: routing.supportRoleId ? { roles: [routing.supportRoleId] } : { parse: [] }
+      });
+      return;
+    }
     const recentMessages = await message.channel.messages.fetch({ limit: 20 });
     const oldHistory = [...recentMessages.values()]
       .filter(item => item.id !== message.id && item.content.trim() && item.embeds.length === 0)
@@ -475,7 +501,7 @@ async function answerTicketWithGemini(message, ticket) {
     const conversation = conversationEntries
       .map(entry => `${entry.role}: ${entry.text}`)
       .join('\n');
-    const prompt = `Du bist der freundliche deutsche KI-Assistent für Support-Tickets zur Minecraft-Mod „OP-Helper Mod“. Behandle jedes Anliegen zuerst als Mod-Support, nicht als Discord-, Plugin-, Hosting- oder allgemeines Server-Support-Thema. Nenne keine Plugins, Server-Einstellungen oder Mod-Funktionen, wenn die Person sie nicht selbst erwähnt hat. Nutze ausschließlich das untenstehende Wissen für konkrete Aussagen über die Mod. Lies den vollständigen Ticketverlauf sorgfältig: Frage niemals erneut nach einer Minecraft-Version, Mod-Version, Fehlermeldung oder anderen Angabe, die dort bereits genannt wurde. OP-Helper unterstützt nur Fabric; frage niemals nach Forge, NeoForge oder dem Mod-Loader. Falls wirklich etwas Wichtiges fehlt, stelle höchstens eine gezielte Rückfrage nach der noch fehlenden Minecraft-Version, exakten OP-Helper-Datei, vollständigen Fehlermeldung oder bereits versuchten Schritten. Erfinde keine Fakten, Anleitungen oder Zusagen. Du kannst keine Server-Einstellungen ändern, keine Konten prüfen und keine Aktionen ausführen. Antworte kurz, klar und auf Deutsch. Weise bei Bedarf darauf hin, dass das Support-Team das Ticket prüft.\n\n${opHelperKnowledge}\n\nTicketverlauf:\n${conversation}`;
+    const prompt = `Du bist der freundliche deutsche KI-Assistent für Support-Tickets zur Minecraft-Mod „OP-Helper Mod“. Behandle jedes Anliegen zuerst als Mod-Support, nicht als Discord-, Plugin-, Hosting- oder allgemeines Server-Support-Thema. Nenne keine Plugins, Server-Einstellungen oder Mod-Funktionen, wenn die Person sie nicht selbst erwähnt hat. Nutze ausschließlich das untenstehende Wissen für konkrete Aussagen über die Mod. Lies den vollständigen Ticketverlauf sorgfältig: Frage niemals erneut nach einer Minecraft-Version, Mod-Version, Fehlermeldung oder anderen Angabe, die dort bereits genannt wurde. OP-Helper unterstützt nur Fabric; frage niemals nach Forge, NeoForge oder dem Mod-Loader. Falls wirklich etwas Wichtiges fehlt, stelle höchstens eine gezielte Rückfrage nach der noch fehlenden Minecraft-Version, exakten OP-Helper-Datei, vollständigen Fehlermeldung oder bereits versuchten Schritten. Erfinde keine Fakten, Anleitungen oder Zusagen. Du kannst keine Server-Einstellungen ändern, keine Konten prüfen und keine Aktionen ausführen. Antworte kurz, klar und auf Deutsch. Beginne niemals mit einer Begrüßung wie „Hallo“, „Hi“ oder „Willkommen“: Das Ticket hat bereits eine Begrüßung, also antworte direkt auf die letzte Frage oder Nachricht. Wenn die Person um Weiterleitung an das Team bittet, bestätige nur die Weiterleitung statt weitere Diagnosefragen zu stellen. Weise bei Bedarf darauf hin, dass das Support-Team das Ticket prüft.\n\n${opHelperKnowledge}\n\nTicketverlauf:\n${conversation}`;
     let response;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
@@ -681,7 +707,7 @@ client.on(Events.InteractionCreate, async interaction => {
         content: `${interaction.user}${supportRoleId !== 'none' ? ` <@&${supportRoleId}>` : ''}`,
         embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(`${ticketTypes[ticketType].label}-Ticket`)
           .setDescription(config.geminiApiKey
-            ? 'Hallo! Beschreibe dein Anliegen so genau wie möglich. Die Ticket-KI hilft dir direkt bei der Einordnung; ein Teammitglied kann jederzeit übernehmen.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.'
+            ? 'Beschreibe dein Anliegen so genau wie möglich. Die Ticket-KI hilft dir direkt bei der Einordnung; ein Teammitglied kann jederzeit übernehmen. Schreibe **„bitte weiterleiten“**, wenn du direkt an das Support-Team übergeben werden möchtest.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.'
             : 'Beschreibe dein Anliegen so genau wie möglich. Ein Teammitglied meldet sich hier.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.')
           .setTimestamp()],
         components: [new ActionRowBuilder().addComponents(
@@ -691,8 +717,9 @@ client.on(Events.InteractionCreate, async interaction => {
           ? { roles: [supportRoleId], users: [interaction.user.id] }
           : { users: [interaction.user.id] }
       });
-      if (notificationChannelId !== 'none') {
-        const notificationChannel = await interaction.guild.channels.fetch(notificationChannelId).catch(() => null);
+      const teamNotificationChannelId = config.ticketNotificationChannelId || notificationChannelId;
+      if (teamNotificationChannelId !== 'none') {
+        const notificationChannel = await interaction.guild.channels.fetch(teamNotificationChannelId).catch(() => null);
         if (notificationChannel?.isTextBased()) {
           await notificationChannel.send({
             content: supportRoleId !== 'none' ? `<@&${supportRoleId}>` : undefined,
