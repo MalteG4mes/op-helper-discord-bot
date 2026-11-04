@@ -711,7 +711,7 @@ client.on(Events.InteractionCreate, async interaction => {
         content: `${interaction.user}${supportRoleId !== 'none' ? ` <@&${supportRoleId}>` : ''}`,
         embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(`${ticketTypes[ticketType].label}-Ticket`)
           .setDescription(config.geminiApiKey
-            ? 'Beschreibe dein Anliegen so genau wie möglich. Die Ticket-KI hilft dir direkt bei der Einordnung; ein Teammitglied kann jederzeit übernehmen. Schreibe **„bitte weiterleiten“**, wenn du direkt an das Support-Team übergeben werden möchtest.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.'
+            ? `Hallo ${interaction.user}! Ich bin die Ticket-KI. Bitte nenne mir dein Anliegen möglichst genau, dann helfe ich dir bei der Einordnung. Ein Teammitglied kann jederzeit übernehmen. Schreibe **„bitte weiterleiten“**, wenn du direkt an das Support-Team übergeben werden möchtest.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.`
             : 'Beschreibe dein Anliegen so genau wie möglich. Ein Teammitglied meldet sich hier.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.')
           .setTimestamp()],
         components: [new ActionRowBuilder().addComponents(
