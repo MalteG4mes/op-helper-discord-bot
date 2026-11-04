@@ -108,7 +108,8 @@ const commands = [
       .addRoleOption(option => option.setName('supportrolle').setDescription('Rolle, die Tickets bearbeiten darf')))
     .addSubcommand(subcommand => subcommand
       .setName('close')
-      .setDescription('Schließt das Ticket in diesem Thread sofort'))
+      .setDescription('Schließt das Ticket in diesem Thread sofort')
+      .addStringOption(option => option.setName('grund').setDescription('Optionaler Grund für die Schließung').setMaxLength(500)))
     .addSubcommand(subcommand => subcommand
       .setName('close-anfrage')
       .setDescription('Fragt die Ticket-Erstellerin bzw. den Ticket-Ersteller nach einer Schließung')
@@ -117,7 +118,8 @@ const commands = [
         .setDescription('Nach wie vielen Minuten das Ticket automatisch geschlossen wird')
         .setRequired(true)
         .setMinValue(1)
-        .setMaxValue(10080)))
+        .setMaxValue(10080))
+      .addStringOption(option => option.setName('grund').setDescription('Optionaler Grund für die Schließungsanfrage').setMaxLength(500)))
     .addSubcommand(subcommand => subcommand
       .setName('add')
       .setDescription('Fügt ein Mitglied zu diesem Ticket hinzu')
@@ -384,6 +386,13 @@ function ticketNumberLabel(ticket) {
   return ticket.ticketId ? `Ticket #${ticket.ticketId}` : 'Dieses Ticket';
 }
 
+function ticketTitleFromThreadName(thread, ticket) {
+  const numbered = new RegExp(`^ticket-${ticket.ticketId}-(?:offen|geschlossen)-${ticket.type}-(.+)-${ticket.ownerId}$`).exec(thread.name);
+  if (numbered) return numbered[1];
+  const legacy = new RegExp(`^ticket-(?:offen|geschlossen)-${ticket.type}-(.+)-${ticket.ownerId}$`).exec(thread.name);
+  return legacy?.[1] || 'anliegen';
+}
+
 function isTicketSupport(interaction, supportRoleId) {
   return supportRoleId && interaction.member.roles?.cache.has(supportRoleId);
 }
@@ -472,11 +481,12 @@ async function forwardTicketToTeam(thread, ticket, summary) {
   return true;
 }
 
-async function closeTicket(thread, ticket, closedBy = null) {
+async function closeTicket(thread, ticket, closedBy = null, reason = null) {
   const scheduled = scheduledTicketClosures.get(thread.id);
   if (scheduled) clearTimeout(scheduled.timeout);
   scheduledTicketClosures.delete(thread.id);
   const closedByText = closedBy?.tag || closedBy?.username || scheduled?.requesterTag || 'dem Support-Team';
+  const closeReason = reason || scheduled?.reason || 'Kein Grund angegeben.';
   const ticketLabel = ticketNumberLabel(ticket);
   const owner = await thread.client.users.fetch(ticket.ownerId).catch(() => null);
   if (owner) {
@@ -485,7 +495,8 @@ async function closeTicket(thread, ticket, closedBy = null) {
         .setDescription(`Dein **${ticketLabel}** wurde geschlossen.`)
         .addFields(
           { name: 'Bereich', value: ticketTypes[ticket.type]?.label || ticket.type || 'Nicht angegeben', inline: true },
-          { name: 'Bearbeitet von', value: closedByText, inline: true }
+          { name: 'Bearbeitet von', value: closedByText, inline: true },
+          { name: 'Grund', value: closeReason }
         )
         .setTimestamp()],
       components: [new ActionRowBuilder().addComponents(
@@ -498,10 +509,10 @@ async function closeTicket(thread, ticket, closedBy = null) {
     }).catch(error => console.warn(`DM für geschlossenes ${ticketLabel} konnte nicht gesendet werden:`, error.message));
   }
   await thread.setName(ticketThreadName({
-    ticketId: ticket.ticketId, state: 'geschlossen', type: ticket.type, ownerId: ticket.ownerId, title: thread.name
+    ticketId: ticket.ticketId, state: 'geschlossen', type: ticket.type, ownerId: ticket.ownerId, title: ticketTitleFromThreadName(thread, ticket)
   }));
   await thread.send({
-    content: `<@${ticket.ownerId}> 🔒 **${ticketLabel}** wurde geschlossen und archiviert. Es bleibt für das Team zur Einsicht erhalten.`,
+    content: `<@${ticket.ownerId}> 🔒 **${ticketLabel}** wurde geschlossen und archiviert.\n**Grund:** ${closeReason}\nEs bleibt für das Team zur Einsicht erhalten.`,
     allowedMentions: { users: [ticket.ownerId] }
   });
   await thread.setLocked(true);
@@ -522,7 +533,7 @@ function closeRequestComponents() {
   );
 }
 
-async function requestTicketClose(thread, ticket, requester, autoCloseMinutes = 1440) {
+async function requestTicketClose(thread, ticket, requester, autoCloseMinutes = 1440, reason = null) {
   const recentMessages = await thread.messages.fetch({ limit: 30 });
   const alreadyRequested = recentMessages.some(message => message.components.some(row =>
     row.components.some(component => component.customId === 'ticket:approve-close')));
@@ -531,7 +542,7 @@ async function requestTicketClose(thread, ticket, requester, autoCloseMinutes = 
   await thread.send({
     content: `<@${ticket.ownerId}>`,
     embeds: [new EmbedBuilder().setColor(0xFEE75C).setTitle('Schließungsvorschlag')
-      .setDescription(`${requester} aus dem Team schlägt vor, **${ticketNumberLabel(ticket)}** zu schließen. Nur die Person, die das Ticket erstellt hat, kann zustimmen oder ablehnen.\n\nOhne Antwort wird das Ticket automatisch <t:${closesAt}:R> geschlossen.`)
+      .setDescription(`${requester} aus dem Team schlägt vor, **${ticketNumberLabel(ticket)}** zu schließen. Nur die Person, die das Ticket erstellt hat, kann zustimmen oder ablehnen.\n\n**Grund:** ${reason || 'Kein Grund angegeben.'}\nOhne Antwort wird das Ticket automatisch <t:${closesAt}:R> geschlossen.`)
       .setTimestamp()],
     components: [closeRequestComponents()],
     allowedMentions: { users: [ticket.ownerId] }
@@ -545,7 +556,7 @@ async function requestTicketClose(thread, ticket, requester, autoCloseMinutes = 
       console.error('Ticket konnte nicht automatisch geschlossen werden:', error.message);
     }
   }, autoCloseMinutes * 60_000);
-  scheduledTicketClosures.set(thread.id, { timeout, closesAt, requesterTag: requester.tag || requester.username });
+  scheduledTicketClosures.set(thread.id, { timeout, closesAt, requesterTag: requester.tag || requester.username, reason });
   return true;
 }
 
@@ -1079,7 +1090,8 @@ client.on(Events.InteractionCreate, async interaction => {
         return interaction.reply({ content: 'Nur das Support-Team kann ein Ticket sofort schließen.', ephemeral: true });
       }
       try {
-        await closeTicket(interaction.channel, ticket, interaction.user);
+        const reason = interaction.options.getString('grund') || null;
+        await closeTicket(interaction.channel, ticket, interaction.user, reason);
         return interaction.reply({ content: `${ticketNumberLabel(ticket)} wurde sofort geschlossen.`, ephemeral: true });
       } catch (error) {
         return interaction.reply({ content: `Ticket konnte nicht geschlossen werden: ${error.message}`, ephemeral: true });
@@ -1091,8 +1103,9 @@ client.on(Events.InteractionCreate, async interaction => {
         return interaction.reply({ content: 'Nur das Support-Team kann einen Schließungsvorschlag senden.', ephemeral: true });
       }
       const minutes = interaction.options.getInteger('minuten', true);
+      const reason = interaction.options.getString('grund') || null;
       try {
-        const requested = await requestTicketClose(interaction.channel, ticket, interaction.user, minutes);
+        const requested = await requestTicketClose(interaction.channel, ticket, interaction.user, minutes, reason);
         return interaction.reply({ content: requested ? `Die Schließungsanfrage wurde gesendet. Ohne Antwort wird ${ticketNumberLabel(ticket)} in ${minutes} Minuten geschlossen.` : 'Für dieses Ticket gibt es bereits einen offenen Schließungsvorschlag.', ephemeral: true });
       } catch (error) {
         return interaction.reply({ content: `Schließungsvorschlag konnte nicht gesendet werden: ${error.message}`, ephemeral: true });
