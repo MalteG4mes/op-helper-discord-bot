@@ -149,6 +149,7 @@ const commands = [
 const streamerStatus = new Map();
 const temporaryVoiceOwners = new Map();
 const ticketAiBusyThreads = new Set();
+const ticketSummaryConfirmations = new Map();
 let twitchAccessToken;
 let twitchAccessTokenExpiresAt = 0;
 
@@ -474,17 +475,6 @@ function extractGeminiText(response) {
     .trim();
 }
 
-function requestsTeamForwarding(text) {
-  // Absichtlich tolerant: Schreibfehler wie "weiter leiten" oder
-  // "weitergeleitet" sollen genauso funktionieren.
-  const normalized = String(text)
-    .toLowerCase()
-    .replace(/[^a-zäöüß]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return /\b(weiter ?leit\w*|an (?:das )?team(?: weiter)?|team (?:bitte )?(?:holen|informieren|benachrichtigen)|menschlich(?:en)? support)\b/.test(normalized);
-}
-
 function teamMention(guild) {
   const roleId = getConfiguredTeamRoleId(guild);
   return roleId ? `<@&${roleId}>` : 'das Support-Team';
@@ -496,14 +486,27 @@ async function answerTicketWithGemini(message, ticket) {
   try {
     const userText = message.content.trim().slice(0, 1800);
     if (!userText) return;
-    const routing = await getTicketRouting(message.channel);
-    if (requestsTeamForwarding(userText)) {
-      await forwardTicketToTeam(message.channel, ticket, userText);
-      const teamRoleId = getConfiguredTeamRoleId(message.guild);
-      await message.channel.send({
-        content: `✅ Ich leite dein Ticket an ${teamMention(message.guild)} weiter. Ein Teammitglied wird sich darum kümmern.`,
-        allowedMentions: teamRoleId ? { roles: [teamRoleId] } : { parse: [] }
-      });
+    const pendingConfirmation = ticketSummaryConfirmations.get(message.channel.id);
+    if (pendingConfirmation) {
+      const answer = userText.toLowerCase().replace(/[.!?]/g, '').trim();
+      if (['ja', 'j', 'yes'].includes(answer)) {
+        ticketSummaryConfirmations.delete(message.channel.id);
+        const wasForwarded = await forwardTicketToTeam(message.channel, ticket, pendingConfirmation.summary);
+        const teamRoleId = getConfiguredTeamRoleId(message.guild);
+        await message.channel.send({
+          content: wasForwarded
+            ? `✅ Danke für die Bestätigung. Ich leite dein Ticket jetzt an ${teamMention(message.guild)} weiter. Ein Teammitglied wird sich darum kümmern.`
+            : '✅ Danke für die Bestätigung. Dein Anliegen bleibt für das Support-Team im Ticket sichtbar.',
+          allowedMentions: wasForwarded && teamRoleId ? { roles: [teamRoleId] } : { parse: [] }
+        });
+        return;
+      }
+      if (['nein', 'n', 'no'].includes(answer)) {
+        ticketSummaryConfirmations.delete(message.channel.id);
+        await message.channel.send('Kein Problem. Schreibe bitte, was an der Zusammenfassung nicht stimmt oder ergänze die fehlenden Angaben. Ich fasse es danach erneut zusammen.');
+        return;
+      }
+      await message.channel.send('Bitte antworte auf die Zusammenfassung nur mit **Ja** oder **Nein**.');
       return;
     }
     const recentMessages = await message.channel.messages.fetch({ limit: 20 });
@@ -519,7 +522,7 @@ async function answerTicketWithGemini(message, ticket) {
     const conversation = conversationEntries
       .map(entry => `${entry.role}: ${entry.text}`)
       .join('\n');
-    const prompt = `Du bist der freundliche deutsche KI-Assistent für Support-Tickets zur Minecraft-Mod „OP-Helper Mod“. Behandle jedes Anliegen zuerst als Mod-Support, nicht als Discord-, Plugin-, Hosting- oder allgemeines Server-Support-Thema. Nenne keine Plugins, Server-Einstellungen oder Mod-Funktionen, wenn die Person sie nicht selbst erwähnt hat. Nutze ausschließlich das untenstehende Wissen für konkrete Aussagen über die Mod. Lies den vollständigen Ticketverlauf sorgfältig: Frage niemals erneut nach einer Minecraft-Version, Mod-Version, Fehlermeldung oder anderen Angabe, die dort bereits genannt wurde. OP-Helper unterstützt nur Fabric; frage niemals nach Forge, NeoForge oder dem Mod-Loader. Falls wirklich etwas Wichtiges fehlt, stelle höchstens eine gezielte Rückfrage nach der noch fehlenden Minecraft-Version, exakten OP-Helper-Datei, vollständigen Fehlermeldung oder bereits versuchten Schritten. Erfinde keine Fakten, Anleitungen oder Zusagen. Du kannst keine Server-Einstellungen ändern, keine Konten prüfen und keine Aktionen ausführen. Antworte kurz, klar und auf Deutsch. Beginne niemals mit einer Begrüßung wie „Hallo“, „Hi“ oder „Willkommen“: Das Ticket hat bereits eine Begrüßung, also antworte direkt auf die letzte Frage oder Nachricht. Wenn die Person um Weiterleitung an das Team bittet, bestätige nur die Weiterleitung statt weitere Diagnosefragen zu stellen. Weise bei Bedarf darauf hin, dass das Support-Team das Ticket prüft.\n\n${opHelperKnowledge}\n\nTicketverlauf:\n${conversation}`;
+    const prompt = `Du bist der freundliche deutsche KI-Assistent für Support-Tickets zur Minecraft-Mod „OP-Helper Mod“. Behandle jedes Anliegen zuerst als Mod-Support, nicht als Discord-, Plugin-, Hosting- oder allgemeines Server-Support-Thema. Nenne keine Plugins, Server-Einstellungen oder Mod-Funktionen, wenn die Person sie nicht selbst erwähnt hat. Nutze ausschließlich das untenstehende Wissen für konkrete Aussagen über die Mod. Lies den vollständigen Ticketverlauf sorgfältig: Frage niemals erneut nach einer Minecraft-Version, Mod-Version, Fehlermeldung oder anderen Angabe, die dort bereits genannt wurde. OP-Helper unterstützt nur Fabric; frage niemals nach Forge, NeoForge oder dem Mod-Loader. Erfinde keine Fakten, Anleitungen oder Zusagen. Du kannst keine Server-Einstellungen ändern, keine Konten prüfen und keine Aktionen ausführen.\n\nDein Ablauf: Sammle zuerst die relevanten Angaben. Bei einem technischen Problem sind das normalerweise Minecraft-Version, OP-Helper-Datei bzw. Mod-Version, Fabric/Fabric-API, genaue Problembeschreibung, Fehlermeldung und bereits versuchte Schritte – frage aber nur nach Angaben, die wirklich noch fehlen. Bei Feedback, Wünschen oder Meldungen reichen die dafür passenden Details. Stelle immer nur eine kurze, gezielte Rückfrage. Beginne niemals mit „Hallo“, „Hi“ oder „Willkommen“.\n\nSobald die Angaben für das Team ausreichend klar sind ODER die Person ausdrücklich eine Weiterleitung, Zusammenfassung oder „fertig“ verlangt, antworte ausschließlich in diesem technischen Format und ohne weiteren Text:\nSUMMARY_READY\n- kurze Zusammenfassung mit allen bekannten Angaben\n- fehlende Angaben ausdrücklich als „nicht angegeben“ nennen\n\nWenn noch etwas Wichtiges fehlt, stelle stattdessen nur die nächste kurze Rückfrage.\n\n${opHelperKnowledge}\n\nTicket-Art: ${ticket.type}\n\nTicketverlauf:\n${conversation}`;
     let response;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
@@ -541,16 +544,22 @@ async function answerTicketWithGemini(message, ticket) {
     const data = await response.json();
     const answer = extractGeminiText(data).slice(0, 1900);
     if (!answer) throw new Error('Gemini hat keine Textantwort geliefert');
-    await message.channel.send({ content: answer, allowedMentions: { parse: [] } });
-    if (await forwardTicketToTeam(message.channel, ticket, userText)) {
-      await message.channel.send('✅ Ich habe dein Anliegen für das Support-Team zusammengefasst. Ein Teammitglied kann das Ticket jetzt übernehmen.');
+    const summaryMatch = /^SUMMARY_READY\s*\n([\s\S]+)/i.exec(answer);
+    if (summaryMatch) {
+      const summary = summaryMatch[1].trim().slice(0, 1800);
+      ticketSummaryConfirmations.set(message.channel.id, { summary });
+      await message.channel.send({
+        embeds: [new EmbedBuilder().setColor(0xFEE75C).setTitle('Zusammenfassung deines Anliegens')
+          .setDescription(summary)
+          .setFooter({ text: 'Stimmt das? Antworte bitte mit Ja oder Nein.' })
+          .setTimestamp()]
+      });
+      return;
     }
+    await message.channel.send({ content: answer, allowedMentions: { parse: [] } });
   } catch (error) {
     console.error('Ticket-KI konnte nicht antworten:', error.message);
     await message.channel.send('Die Ticket-KI ist gerade nicht erreichbar. Ein Teammitglied kann dein Anliegen trotzdem bearbeiten.').catch(() => null);
-    if (await forwardTicketToTeam(message.channel, ticket, userText).catch(() => false)) {
-      await message.channel.send('✅ Ich habe dein Anliegen trotzdem an das Support-Team weitergeleitet.').catch(() => null);
-    }
   } finally {
     ticketAiBusyThreads.delete(message.channel.id);
   }
