@@ -483,7 +483,10 @@ async function closeTicket(thread, ticket, closedBy = null) {
     await owner.send({
       embeds: [new EmbedBuilder().setColor(0xED4245).setTitle('Ticket geschlossen')
         .setDescription(`Dein **${ticketLabel}** wurde geschlossen.`)
-        .addFields({ name: 'Bearbeitet von', value: closedByText })
+        .addFields(
+          { name: 'Bereich', value: ticketTypes[ticket.type]?.label || ticket.type || 'Nicht angegeben', inline: true },
+          { name: 'Bearbeitet von', value: closedByText, inline: true }
+        )
         .setTimestamp()],
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder()
