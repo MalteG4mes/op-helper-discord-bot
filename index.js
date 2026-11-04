@@ -49,7 +49,10 @@ const config = {
   legacyMemberRoleName: process.env.LEGACY_MEMBER_ROLE_NAME || 'Mitglied',
   ticketNotificationChannelId: process.env.TICKET_NOTIFICATION_CHANNEL_ID || '1554508707138764800',
   geminiApiKey: process.env.GEMINI_API_KEY,
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+  // Kann bei einem neuen Mod-Release bei Railway als MOD_SUPPORTED_VERSIONS
+  // angepasst werden, ohne den Bot-Code erneut ändern zu müssen.
+  supportedModVersions: process.env.MOD_SUPPORTED_VERSIONS || '1.21.11, 26.1, 26.1.1, 26.2, 26.3'
 };
 
 if (!['delete', 'timeout', 'ban'].includes(config.filterAction)) {
@@ -305,7 +308,8 @@ Verlässliches Wissen zur OP-Helper Mod:
 - Weitere Funktionen sind Seltenheitsfarben, optionale farbenblindfreundliche Kennzeichnungen, Talisman-Rucksack-Icons in Tooltips sowie anpassbare Menüs, Akzentfarben, Schriftarten, Sprache und Tooltip-Vorlesefunktion.
 - Das Einstellungsmenü wird mit /ophelper geöffnet. Geschützte Befehle wie /rename können eine Bestätigung verlangen.
 - OP-Helper unterstützt ausschließlich Fabric, nicht Forge oder NeoForge. Installation: passende OP-Helper-JAR in den Minecraft-mods-Ordner legen; Fabric Loader und Fabric API werden benötigt. Es darf nur eine zur Minecraft-Version passende OP-Helper-Datei installiert sein.
-- Für Minecraft 1.21.11 wird Java 21 benötigt; für 26.x-Versionen Java 25. Bei Problemen immer nach Minecraft-Version, OP-Helper-Datei, Fabric-Version, Fabric-API und Fehlermeldung fragen.
+- Unterstützte Minecraft-Versionen sind ausschließlich: ${config.supportedModVersions}. Minecraft 1.21.10 wird ausdrücklich nicht unterstützt. Nennt ein Nutzer eine andere Version (insbesondere 1.21.10), erkläre kurz: „Diese Minecraft-Version wird von OP-Helper nicht unterstützt. Bitte nutze eine der unterstützten Versionen: ${config.supportedModVersions}.“ Danach keine Diagnose für diese nicht unterstützte Version anbieten.
+- Für Minecraft 1.21.11 wird Java 21 benötigt; für 26.x-Versionen Java 25. Bei Problemen mit einer unterstützten Version immer nach OP-Helper-Datei, Fabric-Version, Fabric-API und Fehlermeldung fragen.
 - Preisangaben hängen von verfügbaren Auktions- und externen Daten ab. Fehlende oder Vergleichspreise nicht als exakte Werte ausgeben.
 - Erfinde keine weiteren Funktionen, Server-Plugins oder Unterstützung für andere Server.
 `.trim();
