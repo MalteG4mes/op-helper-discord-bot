@@ -99,8 +99,8 @@ const commands = [
     .setName('stream-rollen')
     .setDescription('Erstellt die auswählbaren Streamer-Ping-Rollen'),
   new SlashCommandBuilder()
-    .setName('bewerbung')
-    .setDescription('Bewirb dich als Moderator, Tester oder Supporter'),
+    .setName('bewerber')
+    .setDescription('Zeigt das Bewerbungsmenü für Content, Tester und Supporter'),
   new SlashCommandBuilder()
     .setName('ticket')
     .setDescription('Verwaltet Support-Tickets als private Threads')
@@ -1240,7 +1240,7 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   }
 
-  if (interaction.commandName === 'bewerbung') {
+  if (interaction.commandName === 'bewerber') {
     const menu = new StringSelectMenuBuilder()
       .setCustomId('application:type')
       .setPlaceholder('Wähle eine Bewerbungsart')
@@ -1249,11 +1249,13 @@ client.on(Events.InteractionCreate, async interaction => {
         { label: 'Tester', value: 'tester', description: 'Neue Funktionen und Inhalte testen' },
         { label: 'Supporter', value: 'supporter', description: 'Mitgliedern bei Fragen helfen' }
       );
-    return interaction.reply({
-      content: 'Wähle aus, für welche Rolle du dich bewerben möchtest. Danach kannst du das Formular ausfüllen.',
-      components: [new ActionRowBuilder().addComponents(menu)],
-      ephemeral: true
+    await interaction.channel.send({
+      embeds: [new EmbedBuilder().setColor(0x5865F2)
+        .setTitle('Bewirb dich beim Serverteam')
+        .setDescription('Wähle unten **Content**, **Tester** oder **Supporter** aus und fülle das Bewerbungsformular aus.')],
+      components: [new ActionRowBuilder().addComponents(menu)]
     });
+    return interaction.reply({ content: 'Das Bewerbungsmenü wurde in diesem Kanal veröffentlicht.', ephemeral: true });
   }
 
   if (!canModerate(interaction)) return interaction.reply({ content: 'Dafür fehlt dir die Berechtigung.', ephemeral: true });
