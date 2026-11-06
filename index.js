@@ -845,7 +845,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const type = interaction.customId.split(':')[2];
     const channel = config.applicationChannelId
       ? await interaction.guild.channels.fetch(config.applicationChannelId).catch(() => null)
-      : null;
+      : interaction.channel;
     if (!applicationTypes[type]) return interaction.reply({ content: 'Diese Bewerbungsart gibt es nicht.', ephemeral: true });
     if (!channel?.isTextBased()) {
       return interaction.reply({ content: 'Der Bewerbungskanal ist nicht konfiguriert. Bitte informiere das Serverteam.', ephemeral: true });
