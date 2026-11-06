@@ -817,7 +817,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
   if (interaction.isStringSelectMenu() && interaction.customId === 'application:type') {
     const applicationTypes = {
-      mod: 'Moderator',
+      content: 'Content',
       tester: 'Tester',
       supporter: 'Supporter'
     };
@@ -841,7 +841,7 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   if (interaction.isModalSubmit() && interaction.customId.startsWith('application:submit:')) {
-    const applicationTypes = { mod: 'Moderator', tester: 'Tester', supporter: 'Supporter' };
+    const applicationTypes = { content: 'Content', tester: 'Tester', supporter: 'Supporter' };
     const type = interaction.customId.split(':')[2];
     const channel = config.applicationChannelId
       ? await interaction.guild.channels.fetch(config.applicationChannelId).catch(() => null)
@@ -1245,7 +1245,7 @@ client.on(Events.InteractionCreate, async interaction => {
       .setCustomId('application:type')
       .setPlaceholder('Wähle eine Bewerbungsart')
       .addOptions(
-        { label: 'Moderator', value: 'mod', description: 'Bei Moderation und Serverordnung helfen' },
+        { label: 'Content', value: 'content', description: 'Bei Content und Ideen für den Server helfen' },
         { label: 'Tester', value: 'tester', description: 'Neue Funktionen und Inhalte testen' },
         { label: 'Supporter', value: 'supporter', description: 'Mitgliedern bei Fragen helfen' }
       );
