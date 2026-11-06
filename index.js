@@ -526,6 +526,26 @@ async function closeTicket(thread, ticket, closedBy = null, reason = null) {
   await thread.setArchived(true);
 }
 
+async function getApplicationApplicantId(thread) {
+  const messages = await thread.messages.fetch({ limit: 50 }).catch(() => new Map());
+  for (const message of messages.values()) {
+    const applicationEmbed = message.embeds.find(embed => embed.title?.startsWith('Bewerbung:'));
+    const applicantId = applicationEmbed?.description?.match(/\((\d{17,20})\)/)?.[1];
+    if (applicantId) return applicantId;
+  }
+  return null;
+}
+
+async function closeApplicationThread(thread, closedBy = null, reason = 'Kein Grund angegeben.') {
+  const scheduled = scheduledTicketClosures.get(thread.id);
+  if (scheduled) clearTimeout(scheduled.timeout);
+  scheduledTicketClosures.delete(thread.id);
+  const closedByText = closedBy?.tag || closedBy?.username || scheduled?.requesterTag || 'dem Serverteam';
+  await thread.send(`🔒 Diese Bewerbung wurde von ${closedByText} geschlossen.\n**Grund:** ${reason || scheduled?.reason || 'Kein Grund angegeben.'}`);
+  await thread.setLocked(true, 'Bewerbung geschlossen');
+  await thread.setArchived(true, 'Bewerbung geschlossen');
+}
+
 function isTicketTeam(interaction, supportRoleId) {
   const configuredTeamRoleId = getConfiguredTeamRoleId(interaction.guild);
   return isTicketSupport(interaction, configuredTeamRoleId) || isTicketSupport(interaction, supportRoleId) ||
@@ -1058,8 +1078,15 @@ client.on(Events.InteractionCreate, async interaction => {
 
   if (interaction.isButton() && ['ticket:approve-close', 'ticket:deny-close'].includes(interaction.customId)) {
     const ticket = parseTicketThread(interaction.channel);
-    if (!ticket || ticket.state !== 'offen') return interaction.reply({ content: 'Dieses Ticket ist bereits geschlossen oder ungültig.', ephemeral: true });
-    if (interaction.user.id !== ticket.ownerId) return interaction.reply({ content: 'Nur die Person, die dieses Ticket erstellt hat, darf darüber entscheiden.', ephemeral: true });
+    const applicationThread = interaction.channel?.isThread?.() &&
+      interaction.channel.type === ChannelType.PrivateThread && /^bewerbung-/i.test(interaction.channel.name);
+    const applicantId = !ticket && applicationThread ? await getApplicationApplicantId(interaction.channel) : null;
+    if ((!ticket && !applicantId) || (ticket && ticket.state !== 'offen')) {
+      return interaction.reply({ content: 'Dieses Ticket oder diese Bewerbung ist bereits geschlossen oder ungültig.', ephemeral: true });
+    }
+    if (interaction.user.id !== (ticket?.ownerId || applicantId)) {
+      return interaction.reply({ content: 'Nur die Person, die dieses Ticket oder diese Bewerbung erstellt hat, darf darüber entscheiden.', ephemeral: true });
+    }
     if (interaction.customId === 'ticket:deny-close') {
       const scheduled = scheduledTicketClosures.get(interaction.channel.id);
       if (scheduled) clearTimeout(scheduled.timeout);
@@ -1076,7 +1103,8 @@ client.on(Events.InteractionCreate, async interaction => {
           .setDescription(`${interaction.user} hat zugestimmt. Das Ticket wird archiviert.`).setTimestamp()],
         components: []
       });
-      await closeTicket(interaction.channel, ticket);
+      if (ticket) await closeTicket(interaction.channel, ticket);
+      else await closeApplicationThread(interaction.channel, interaction.user);
     } catch (error) {
       return interaction.followUp({ content: `Ticket konnte nicht geschlossen werden: ${error.message}`, ephemeral: true });
     }
@@ -1209,15 +1237,56 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!ticket) {
       const applicationThread = interaction.channel?.isThread?.() &&
         interaction.channel.type === ChannelType.PrivateThread && /^bewerbung-/i.test(interaction.channel.name);
-      if (applicationThread && subcommand === 'close') {
+      if (applicationThread && ['close', 'close-anfrage', 'rename', 'add'].includes(subcommand)) {
         if (!isTicketTeam(interaction, null)) {
-          return interaction.reply({ content: 'Nur das Serverteam kann eine Bewerbung schließen.', ephemeral: true });
+          return interaction.reply({ content: 'Nur das Serverteam kann Bewerbungen verwalten.', ephemeral: true });
         }
         try {
+          if (subcommand === 'add') {
+            const member = interaction.options.getMember('mitglied');
+            if (!member || !('user' in member)) return interaction.reply({ content: 'Mitglied nicht gefunden.', ephemeral: true });
+            await interaction.channel.members.add(member.id);
+            return interaction.reply({ content: `${member} wurde zum Bewerbungs-Thread hinzugefügt.`, ephemeral: true });
+          }
+          if (subcommand === 'rename') {
+            const name = interaction.options.getString('name', true);
+            const newThreadName = `Bewerbung-${safeTicketText(name)}`.slice(0, 100);
+            await interaction.channel.setName(newThreadName);
+            return interaction.reply({ content: `Bewerbungs-Thread wurde in **${newThreadName}** umbenannt.`, ephemeral: true });
+          }
+          if (subcommand === 'close-anfrage') {
+            const applicantId = await getApplicationApplicantId(interaction.channel);
+            if (!applicantId) return interaction.reply({ content: 'Die bewerbende Person konnte nicht ermittelt werden.', ephemeral: true });
+            const recentMessages = await interaction.channel.messages.fetch({ limit: 30 });
+            const pendingRequest = recentMessages.some(message => message.components.some(row =>
+              row.components.some(component => component.customId === 'ticket:approve-close')));
+            if (pendingRequest) return interaction.reply({ content: 'Für diese Bewerbung gibt es bereits eine offene Schließungsanfrage.', ephemeral: true });
+            const minutes = interaction.options.getInteger('minuten', true);
+            const reason = interaction.options.getString('grund') || 'Kein Grund angegeben.';
+            const closesAt = Math.floor((Date.now() + minutes * 60_000) / 1000);
+            await interaction.channel.send({
+              content: `<@${applicantId}>`,
+              embeds: [new EmbedBuilder().setColor(0xFEE75C).setTitle('Schließungsvorschlag')
+                .setDescription(`${interaction.user} aus dem Team schlägt vor, diese Bewerbung zu schließen. Du kannst zustimmen oder ablehnen.\n\n**Grund:** ${reason}\nOhne Antwort wird die Bewerbung automatisch <t:${closesAt}:R> geschlossen.`)
+                .setTimestamp()],
+              components: [closeRequestComponents()],
+              allowedMentions: { users: [applicantId] }
+            });
+            const timeout = setTimeout(async () => {
+              if (interaction.channel.archived || interaction.channel.locked) return;
+              try {
+                await closeApplicationThread(interaction.channel, null, reason);
+              } catch (error) {
+                console.error('Bewerbung konnte nach Schließungsanfrage nicht automatisch geschlossen werden:', error.message);
+              }
+            }, minutes * 60_000);
+            scheduledTicketClosures.set(interaction.channel.id, {
+              timeout, closesAt, requesterTag: interaction.user.tag || interaction.user.username, reason
+            });
+            return interaction.reply({ content: `Die Schließungsanfrage wurde gesendet. Ohne Antwort wird die Bewerbung in ${minutes} Minuten geschlossen.`, ephemeral: true });
+          }
           const reason = interaction.options.getString('grund') || 'Kein Grund angegeben.';
-          await interaction.channel.send(`🔒 Diese Bewerbung wurde von ${interaction.user} geschlossen.\n**Grund:** ${reason}`);
-          await interaction.channel.setLocked(true, `Bewerbung geschlossen von ${interaction.user.tag}`);
-          await interaction.channel.setArchived(true, `Bewerbung geschlossen von ${interaction.user.tag}`);
+          await closeApplicationThread(interaction.channel, interaction.user, reason);
           return interaction.reply({ content: 'Die Bewerbung wurde geschlossen und archiviert.', ephemeral: true });
         } catch (error) {
           return interaction.reply({ content: `Bewerbung konnte nicht geschlossen werden: ${error.message}`, ephemeral: true });
