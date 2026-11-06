@@ -29,7 +29,9 @@ const streamers = [
   { login: 'scusytv', displayName: 'ScusyTV' },
   { login: 'xxlukaas_', displayName: 'XxLukas' },
   { login: 'ccatched', displayName: 'ccatched' },
-  { login: 'simontheking799', displayName: 'Simontheking799' }
+  { login: 'simontheking799', displayName: 'Simontheking799' },
+  { login: 'tsheyn', displayName: 'Tsheyn' },
+  { login: 'champion336666', displayName: 'Champion336666' }
 ].map(streamer => ({ ...streamer, roleName: `Stream-Ping: ${streamer.displayName}` }));
 
 const config = {
