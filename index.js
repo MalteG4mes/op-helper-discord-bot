@@ -885,8 +885,15 @@ client.on(Events.InteractionCreate, async interaction => {
           content: teamRole ? `<@&${teamRole.id}> Neue Bewerbung eingegangen.` : 'Neue Bewerbung eingegangen.',
           embeds: [new EmbedBuilder().setColor(0xFEE75C)
             .setTitle(`Neue Bewerbung: ${applicationTypes[type]}`)
-            .setDescription(`${interaction.user} hat sich beworben. [Privaten Bewerbungs-Thread öffnen](https://discord.com/channels/${interaction.guild.id}/${thread.id})`)
+            .setDescription(`${interaction.user} hat sich beworben.`)
             .setTimestamp()],
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`application:take:${thread.id}`)
+              .setLabel('Bewerbung übernehmen').setEmoji('📩').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setLabel('Bewerbung öffnen')
+              .setURL(`https://discord.com/channels/${interaction.guild.id}/${thread.id}`)
+              .setStyle(ButtonStyle.Link)
+          )],
           allowedMentions: teamRole ? { roles: [teamRole.id] } : { parse: [] }
         }).catch(error => console.error('Team-Benachrichtigung zur Bewerbung konnte nicht gesendet werden:', error.message));
       }
@@ -970,6 +977,34 @@ client.on(Events.InteractionCreate, async interaction => {
     } catch (error) {
       console.error('Ticket konnte nicht erstellt werden:', error);
       return interaction.reply({ content: `Ticket konnte nicht erstellt werden: ${error.message}`, ephemeral: true });
+    }
+  }
+
+  if (interaction.isButton() && interaction.customId.startsWith('application:take:')) {
+    const threadId = interaction.customId.split(':')[2];
+    const thread = await interaction.guild.channels.fetch(threadId).catch(() => null);
+    if (!thread?.isThread?.() || thread.type !== ChannelType.PrivateThread) {
+      return interaction.reply({ content: 'Der private Bewerbungs-Thread wurde nicht gefunden.', ephemeral: true });
+    }
+    if (!isTicketTeam(interaction, null)) {
+      return interaction.reply({ content: 'Nur das Serverteam kann eine Bewerbung übernehmen.', ephemeral: true });
+    }
+    try {
+      await thread.members.add(interaction.user.id);
+      await thread.send(`📩 ${interaction.user} hat diese Bewerbung übernommen.`)
+        .catch(error => console.error('Übernahme konnte nicht im Bewerbungs-Thread vermerkt werden:', error.message));
+      return interaction.update({
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`application:take:${thread.id}`)
+            .setLabel(`Übernommen von ${interaction.user.username}`.slice(0, 80))
+            .setEmoji('✅').setStyle(ButtonStyle.Secondary).setDisabled(true),
+          new ButtonBuilder().setLabel('Bewerbung öffnen')
+            .setURL(`https://discord.com/channels/${interaction.guild.id}/${thread.id}`)
+            .setStyle(ButtonStyle.Link)
+        )]
+      });
+    } catch (error) {
+      return interaction.reply({ content: `Bewerbung konnte nicht übernommen werden: ${error.message}`, ephemeral: true });
     }
   }
 
