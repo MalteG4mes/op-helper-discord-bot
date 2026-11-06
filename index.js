@@ -3,7 +3,7 @@ const {
   Client, GatewayIntentBits, Events, PermissionFlagsBits,
   EmbedBuilder, REST, Routes, SlashCommandBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType,
-  StringSelectMenuBuilder, Partials
+  StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, Partials
 } = require('discord.js');
 
 const required = ['DISCORD_TOKEN'];
@@ -38,6 +38,8 @@ const config = {
   guildId: process.env.GUILD_ID,
   welcomeChannelId: process.env.WELCOME_CHANNEL_ID,
   modLogChannelId: process.env.MOD_LOG_CHANNEL_ID,
+  applicationChannelId: process.env.APPLICATION_CHANNEL_ID || process.env.MOD_LOG_CHANNEL_ID,
+  applicationNotificationChannelId: process.env.APPLICATION_NOTIFICATION_CHANNEL_ID || '1554508707138764800',
   bannedTerms: (process.env.BANNED_TERMS || '')
     .split(',').map(term => term.trim().toLowerCase()).filter(Boolean),
   filterAction: process.env.FILTER_ACTION || 'delete',
@@ -96,6 +98,9 @@ const commands = [
   new SlashCommandBuilder()
     .setName('stream-rollen')
     .setDescription('Erstellt die auswählbaren Streamer-Ping-Rollen'),
+  new SlashCommandBuilder()
+    .setName('bewerbung')
+    .setDescription('Bewirb dich als Moderator, Tester oder Supporter'),
   new SlashCommandBuilder()
     .setName('ticket')
     .setDescription('Verwaltet Support-Tickets als private Threads')
@@ -810,6 +815,88 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.inGuild()) return;
 
+  if (interaction.isStringSelectMenu() && interaction.customId === 'application:type') {
+    const applicationTypes = {
+      mod: 'Moderator',
+      tester: 'Tester',
+      supporter: 'Supporter'
+    };
+    const type = interaction.values[0];
+    if (!applicationTypes[type]) return interaction.reply({ content: 'Diese Bewerbungsart gibt es nicht.', ephemeral: true });
+
+    const modal = new ModalBuilder()
+      .setCustomId(`application:submit:${type}`)
+      .setTitle(`Bewerbung als ${applicationTypes[type]}`)
+      .addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder()
+          .setCustomId('age').setLabel('Wie alt bist du?').setStyle(TextInputStyle.Short).setMaxLength(100).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder()
+          .setCustomId('availability').setLabel('Wann bist du meist verfügbar?').setStyle(TextInputStyle.Short).setMaxLength(200).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder()
+          .setCustomId('motivation').setLabel('Warum möchtest du diese Rolle?').setStyle(TextInputStyle.Paragraph).setMaxLength(1000).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder()
+          .setCustomId('experience').setLabel('Welche Erfahrung bringst du mit?').setStyle(TextInputStyle.Paragraph).setMaxLength(1000).setRequired(true))
+      );
+    return interaction.showModal(modal);
+  }
+
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('application:submit:')) {
+    const applicationTypes = { mod: 'Moderator', tester: 'Tester', supporter: 'Supporter' };
+    const type = interaction.customId.split(':')[2];
+    const channel = config.applicationChannelId
+      ? await interaction.guild.channels.fetch(config.applicationChannelId).catch(() => null)
+      : null;
+    if (!applicationTypes[type]) return interaction.reply({ content: 'Diese Bewerbungsart gibt es nicht.', ephemeral: true });
+    if (!channel?.isTextBased()) {
+      return interaction.reply({ content: 'Der Bewerbungskanal ist nicht konfiguriert. Bitte informiere das Serverteam.', ephemeral: true });
+    }
+    if (!channel.threads || channel.isThread?.()) {
+      return interaction.reply({ content: 'Der Bewerbungskanal unterstützt keine privaten Threads. Bitte informiere das Serverteam.', ephemeral: true });
+    }
+    try {
+      const answers = [
+        { name: 'Alter', value: interaction.fields.getTextInputValue('age') },
+        { name: 'Verfügbarkeit', value: interaction.fields.getTextInputValue('availability') },
+        { name: 'Motivation', value: interaction.fields.getTextInputValue('motivation') },
+        { name: 'Erfahrung', value: interaction.fields.getTextInputValue('experience') }
+      ];
+      const thread = await channel.threads.create({
+        name: `Bewerbung-${applicationTypes[type]}-${interaction.user.username}`.slice(0, 100),
+        type: ChannelType.PrivateThread,
+        invitable: false,
+        autoArchiveDuration: 1440,
+        reason: `Bewerbung als ${applicationTypes[type]} von ${interaction.user.tag}`
+      });
+      await thread.members.add(interaction.user.id);
+      await thread.send({
+        content: `Neue Bewerbung von ${interaction.user} · ${applicationTypes[type]}`,
+        embeds: [new EmbedBuilder().setColor(0x5865F2)
+          .setTitle(`Bewerbung: ${applicationTypes[type]}`)
+          .setDescription(`**Bewerber:** ${interaction.user.tag} (\`${interaction.user.id}\`)`)
+          .addFields(answers)
+          .setTimestamp()],
+        allowedMentions: { parse: [] }
+      });
+      const notificationChannel = await interaction.guild.channels
+        .fetch(config.applicationNotificationChannelId).catch(() => null);
+      if (notificationChannel?.isTextBased() && !notificationChannel.isThread?.()) {
+        const teamRole = interaction.guild.roles.cache.find(role => role.name === config.teamRoleName);
+        await notificationChannel.send({
+          content: teamRole ? `<@&${teamRole.id}> Neue Bewerbung eingegangen.` : 'Neue Bewerbung eingegangen.',
+          embeds: [new EmbedBuilder().setColor(0xFEE75C)
+            .setTitle(`Neue Bewerbung: ${applicationTypes[type]}`)
+            .setDescription(`${interaction.user} hat sich beworben. [Privaten Bewerbungs-Thread öffnen](https://discord.com/channels/${interaction.guild.id}/${thread.id})`)
+            .setTimestamp()],
+          allowedMentions: teamRole ? { roles: [teamRole.id] } : { parse: [] }
+        }).catch(error => console.error('Team-Benachrichtigung zur Bewerbung konnte nicht gesendet werden:', error.message));
+      }
+      return interaction.reply({ content: `Deine Bewerbung wurde in einem privaten Thread erstellt: <#${thread.id}>`, ephemeral: true });
+    } catch (error) {
+      console.error('Bewerbung konnte nicht gesendet werden:', error);
+      return interaction.reply({ content: 'Deine Bewerbung konnte gerade nicht gesendet werden. Bitte versuche es später erneut.', ephemeral: true });
+    }
+  }
+
   if ((interaction.isStringSelectMenu() || interaction.isButton()) && interaction.customId.startsWith('ticket:create:')) {
     const [, , ticketChannelId, supportRoleId = 'none', notificationChannelId = 'none'] = interaction.customId.split(':');
     // Neue Tickets verwenden immer die Rolle "Team", sofern sie vorhanden ist.
@@ -1151,6 +1238,22 @@ client.on(Events.InteractionCreate, async interaction => {
     } catch (error) {
       return interaction.reply({ content: `Rollen konnten nicht eingerichtet werden: ${error.message}`, ephemeral: true });
     }
+  }
+
+  if (interaction.commandName === 'bewerbung') {
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('application:type')
+      .setPlaceholder('Wähle eine Bewerbungsart')
+      .addOptions(
+        { label: 'Moderator', value: 'mod', description: 'Bei Moderation und Serverordnung helfen' },
+        { label: 'Tester', value: 'tester', description: 'Neue Funktionen und Inhalte testen' },
+        { label: 'Supporter', value: 'supporter', description: 'Mitgliedern bei Fragen helfen' }
+      );
+    return interaction.reply({
+      content: 'Wähle aus, für welche Rolle du dich bewerben möchtest. Danach kannst du das Formular ausfüllen.',
+      components: [new ActionRowBuilder().addComponents(menu)],
+      ephemeral: true
+    });
   }
 
   if (!canModerate(interaction)) return interaction.reply({ content: 'Dafür fehlt dir die Berechtigung.', ephemeral: true });
