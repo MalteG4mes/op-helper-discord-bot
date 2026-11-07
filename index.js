@@ -651,7 +651,16 @@ async function answerTicketWithGemini(message, ticket) {
       // Eine neue Frage beendet den Schließungs-Follow-up; sie wird normal beantwortet.
       ticketFollowupPendingClosures.delete(message.channel.id);
     }
-    const isUserReportRequest = /\b(?:user|nutzer|mitglied|spieler|jemanden)\b.{0,60}\b(?:melden|meldung|report|beschweren)\b|\b(?:melden|meldung|report|beschweren)\b.{0,60}\b(?:user|nutzer|mitglied|spieler|jemanden)\b/i.test(userText);
+    const isBareReportAnswer = /^(?:server[\s-]*nutzer|nutzer|spieler|mitglied)$/i.test(userText);
+    let isAnswerToReportClarification = false;
+    if (isBareReportAnswer) {
+      const recentMessages = await message.channel.messages.fetch({ limit: 6 });
+      const previousBotMessage = [...recentMessages.values()]
+        .filter(item => item.id !== message.id && item.author.id === client.user.id && item.createdTimestamp < message.createdTimestamp)
+        .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0];
+      isAnswerToReportClarification = /server[\s-]*nutzer.{0,60}(?:melden|meldung)|(?:melden|meldung).{0,60}server[\s-]*nutzer/i.test(previousBotMessage?.content || '');
+    }
+    const isUserReportRequest = /\b(?:user|nutzer|mitglied|spieler|jemanden)\b.{0,60}\b(?:melden|meldung|report|beschweren)\b|\b(?:melden|meldung|report|beschweren)\b.{0,60}\b(?:user|nutzer|mitglied|spieler|jemanden)\b/i.test(userText) || isAnswerToReportClarification;
     if (ticket.type !== 'meldung' && isUserReportRequest) {
       const panelChannelId = message.channel.parentId;
       const response = {
