@@ -405,6 +405,12 @@ function ticketNumberLabel(ticket) {
   return ticket.ticketId ? `Ticket #${ticket.ticketId}` : 'Dieses Ticket';
 }
 
+function isTicketCloseRequest(text) {
+  const explicitRequest = /\b(?:ticket|thread|anliegen)(?:\s+\w+){0,5}\s+(?:schließ\w*|schliess\w*|zumach\w*|beend\w*)\b|\b(?:schließ\w*|schliess\w*|zumach\w*|beend\w*).{0,50}\b(?:ticket|thread|anliegen)\b/i.test(text);
+  const shortRequest = /^(?:bitte\s+)?(?:schließ\w*|schliess\w*|zumach\w*|beend\w*)(?:\s+bitte)?[.!?]*$/i.test(text.trim());
+  return explicitRequest || shortRequest;
+}
+
 function ticketTitleFromThreadName(thread, ticket) {
   const numbered = new RegExp(`^ticket-${ticket.ticketId}-(?:offen|geschlossen)-${ticket.type}-(.+)-${ticket.ownerId}$`).exec(thread.name);
   if (numbered) return numbered[1];
@@ -626,8 +632,7 @@ async function answerTicketWithGemini(message, ticket) {
     if (!userText) return;
     if (ticketFollowupPendingClosures.has(message.channel.id) && ticket.type === 'support') {
       const answer = userText.toLowerCase().replace(/[.!?,]/g, '').trim();
-      const explicitlyAskedToClose = /\b(?:ticket|thread|anliegen)(?:\s+\w+){0,5}\s+(?:schließ\w*|schliess\w*|zumach\w*|beend\w*)\b|\b(?:schließ\w*|schliess\w*|zumach\w*|beend\w*).{0,50}\b(?:ticket|thread|anliegen)\b/i.test(userText);
-      if (explicitlyAskedToClose) {
+      if (isTicketCloseRequest(userText)) {
         ticketFollowupPendingClosures.delete(message.channel.id);
         const requested = await requestTicketClose(message.channel, ticket, client.user, 24 * 60,
           'Die Person hat darum gebeten, dieses Ticket zu schließen.');
@@ -668,8 +673,7 @@ async function answerTicketWithGemini(message, ticket) {
       // Eine neue Frage beendet den Schließungs-Follow-up; sie wird normal beantwortet.
       ticketFollowupPendingClosures.delete(message.channel.id);
     }
-    const explicitlyAskedToClose = /\b(?:ticket|thread|anliegen)(?:\s+\w+){0,5}\s+(?:schließ\w*|schliess\w*|zumach\w*|beend\w*)\b|\b(?:schließ\w*|schliess\w*|zumach\w*|beend\w*).{0,50}\b(?:ticket|thread|anliegen)\b/i.test(userText);
-    if (ticket.type === 'support' && explicitlyAskedToClose) {
+    if (isTicketCloseRequest(userText)) {
       const requested = await requestTicketClose(message.channel, ticket, client.user, 24 * 60,
         'Die Person hat darum gebeten, dieses Ticket zu schließen.');
       await message.reply({
