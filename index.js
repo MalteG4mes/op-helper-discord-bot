@@ -626,6 +626,19 @@ async function answerTicketWithGemini(message, ticket) {
     if (!userText) return;
     if (ticketFollowupPendingClosures.has(message.channel.id) && ticket.type === 'support') {
       const answer = userText.toLowerCase().replace(/[.!?,]/g, '').trim();
+      const explicitlyAskedToClose = /\b(?:ticket|thread|anliegen)(?:\s+\w+){0,5}\s+(?:schließ\w*|schliess\w*|zumach\w*|beend\w*)\b|\b(?:schließ\w*|schliess\w*|zumach\w*|beend\w*).{0,50}\b(?:ticket|thread|anliegen)\b/i.test(userText);
+      if (explicitlyAskedToClose) {
+        ticketFollowupPendingClosures.delete(message.channel.id);
+        const requested = await requestTicketClose(message.channel, ticket, client.user, 24 * 60,
+          'Die Person hat darum gebeten, dieses Ticket zu schließen.');
+        await message.reply({
+          content: requested
+            ? 'Alles klar. Ich habe eine Schließungsanfrage gestellt. Du kannst sie unten bestätigen oder ablehnen. Wenn du nicht antwortest, wird das Ticket in 24 Stunden automatisch geschlossen.'
+            : 'Für dieses Ticket gibt es bereits eine offene Schließungsanfrage. Du kannst sie unten bestätigen oder ablehnen.',
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
       if (['nein', 'nee', 'nö', 'no', 'nope'].includes(answer)) {
         ticketFollowupPendingClosures.delete(message.channel.id);
         const requested = await requestTicketClose(
@@ -648,8 +661,24 @@ async function answerTicketWithGemini(message, ticket) {
         await message.reply({ content: 'Okay, was ist deine Frage?', allowedMentions: { parse: [] } });
         return;
       }
+      if (['ok', 'okay', 'danke', 'alles klar', 'alles klar danke'].includes(answer)) {
+        await message.reply({ content: 'Alles klar. Hast du sonst noch eine Frage? Antworte mit **Ja** oder **Nein**. Wenn du **Nein** sagst, stelle ich eine Schließungsanfrage für dieses Ticket.', allowedMentions: { parse: [] } });
+        return;
+      }
       // Eine neue Frage beendet den Schließungs-Follow-up; sie wird normal beantwortet.
       ticketFollowupPendingClosures.delete(message.channel.id);
+    }
+    const explicitlyAskedToClose = /\b(?:ticket|thread|anliegen)(?:\s+\w+){0,5}\s+(?:schließ\w*|schliess\w*|zumach\w*|beend\w*)\b|\b(?:schließ\w*|schliess\w*|zumach\w*|beend\w*).{0,50}\b(?:ticket|thread|anliegen)\b/i.test(userText);
+    if (ticket.type === 'support' && explicitlyAskedToClose) {
+      const requested = await requestTicketClose(message.channel, ticket, client.user, 24 * 60,
+        'Die Person hat darum gebeten, dieses Ticket zu schließen.');
+      await message.reply({
+        content: requested
+          ? 'Alles klar. Ich habe eine Schließungsanfrage gestellt. Du kannst sie unten bestätigen oder ablehnen. Wenn du nicht antwortest, wird das Ticket in 24 Stunden automatisch geschlossen.'
+          : 'Für dieses Ticket gibt es bereits eine offene Schließungsanfrage. Du kannst sie unten bestätigen oder ablehnen.',
+        allowedMentions: { parse: [] }
+      });
+      return;
     }
     const isBareReportAnswer = /^(?:server[\s-]*nutzer|nutzer|spieler|mitglied)$/i.test(userText);
     let isAnswerToReportClarification = false;
