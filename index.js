@@ -168,6 +168,7 @@ const streamerStatus = new Map();
 const temporaryVoiceOwners = new Map();
 const ticketAiBusyThreads = new Set();
 const ticketSummaryConfirmations = new Map();
+const ticketFollowupPendingClosures = new Set();
 const ticketNumbersByChannel = new Map();
 const scheduledTicketClosures = new Map();
 let twitchAccessToken;
@@ -577,10 +578,13 @@ async function requestTicketClose(thread, ticket, requester, autoCloseMinutes = 
     row.components.some(component => component.customId === 'ticket:approve-close')));
   if (alreadyRequested) return false;
   const closesAt = Math.floor((Date.now() + autoCloseMinutes * 60_000) / 1000);
+  const requesterText = requester.id === thread.client.user.id
+    ? 'Die Ticket-KI schlägt vor'
+    : `${requester} aus dem Team schlägt vor`;
   await thread.send({
     content: `<@${ticket.ownerId}>`,
     embeds: [new EmbedBuilder().setColor(0xFEE75C).setTitle('Schließungsvorschlag')
-      .setDescription(`${requester} aus dem Team schlägt vor, **${ticketNumberLabel(ticket)}** zu schließen. Nur die Person, die das Ticket erstellt hat, kann zustimmen oder ablehnen.\n\n**Grund:** ${reason || 'Kein Grund angegeben.'}\nOhne Antwort wird das Ticket automatisch <t:${closesAt}:R> geschlossen.`)
+      .setDescription(`${requesterText}, **${ticketNumberLabel(ticket)}** zu schließen. Nur die Person, die das Ticket erstellt hat, kann zustimmen oder ablehnen.\n\n**Grund:** ${reason || 'Kein Grund angegeben.'}\nOhne Antwort wird das Ticket automatisch <t:${closesAt}:R> geschlossen.`)
       .setTimestamp()],
     components: [closeRequestComponents()],
     allowedMentions: { users: [ticket.ownerId] }
@@ -620,11 +624,38 @@ async function answerTicketWithGemini(message, ticket) {
   try {
     const userText = message.content.trim().slice(0, 1800);
     if (!userText) return;
+    if (ticketFollowupPendingClosures.has(message.channel.id) && ticket.type === 'support') {
+      const answer = userText.toLowerCase().replace(/[.!?,]/g, '').trim();
+      if (['nein', 'nee', 'nö', 'no', 'nope'].includes(answer)) {
+        ticketFollowupPendingClosures.delete(message.channel.id);
+        const requested = await requestTicketClose(
+          message.channel,
+          ticket,
+          client.user,
+          24 * 60,
+          'Die Person hat bestätigt, dass keine weitere Frage offen ist.'
+        );
+        await message.reply({
+          content: requested
+            ? 'Alles klar. Ich habe eine Schließungsanfrage gestellt. Du kannst sie unten bestätigen oder ablehnen. Wenn du nicht antwortest, wird das Ticket in 24 Stunden automatisch geschlossen.'
+            : 'Für dieses Ticket gibt es bereits eine offene Schließungsanfrage. Du kannst sie unten bestätigen oder ablehnen.',
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+      if (['ja', 'j', 'yes'].includes(answer)) {
+        ticketFollowupPendingClosures.delete(message.channel.id);
+        await message.reply({ content: 'Okay, was ist deine Frage?', allowedMentions: { parse: [] } });
+        return;
+      }
+      // Eine neue Frage beendet den Schließungs-Follow-up; sie wird normal beantwortet.
+      ticketFollowupPendingClosures.delete(message.channel.id);
+    }
     const isUserReportRequest = /\b(?:user|nutzer|mitglied|spieler|jemanden)\b.{0,60}\b(?:melden|meldung|report|beschweren)\b|\b(?:melden|meldung|report|beschweren)\b.{0,60}\b(?:user|nutzer|mitglied|spieler|jemanden)\b/i.test(userText);
     if (ticket.type !== 'meldung' && isUserReportRequest) {
       const panelChannelId = message.channel.parentId;
       const response = {
-        content: `Ja, du kannst den Spieler dem Serverteam melden. In diesem **${ticketTypes[ticket.type]?.label || 'Support'}**-Ticket wurde die Meldung aber noch nicht eingereicht. So erstellst du das passende Ticket:\n1. Klicke auf **Ticket-Auswahl öffnen**.\n2. Wähle im Panel den Button **Meldung**.\n3. Im neuen privaten Thread nennst du den Spielernamen, beschreibst kurz den Vorfall und wann er passiert ist. Screenshots oder andere Belege kannst du dort ebenfalls senden.\n\nDein aktuelles Ticket bleibt offen. Die Meldung wird erst im neuen **Meldung**-Ticket ans Team geschickt.`,
+        content: `Ja, du kannst den Spieler dem Serverteam melden. In diesem **${ticketTypes[ticket.type]?.label || 'Support'}**-Ticket wurde die Meldung aber noch nicht eingereicht. So erstellst du das passende Ticket:\n1. Klicke auf **Ticket-Auswahl öffnen**.\n2. Wähle im Panel den Button **Meldung**.\n3. Im neuen privaten Thread nennst du den Spielernamen, beschreibst kurz den Vorfall und wann er passiert ist. Screenshots oder andere Belege kannst du dort ebenfalls senden.\n\nDein aktuelles Ticket bleibt offen. Die Meldung wird erst im neuen **Meldung**-Ticket ans Team geschickt. Hast du sonst noch eine Frage?`,
         allowedMentions: { parse: [] }
       };
       if (panelChannelId) {
@@ -636,6 +667,7 @@ async function answerTicketWithGemini(message, ticket) {
         )];
       }
       await message.reply(response);
+      if (ticket.type === 'support') ticketFollowupPendingClosures.add(message.channel.id);
       return;
     }
     const pendingConfirmation = ticketSummaryConfirmations.get(message.channel.id);
