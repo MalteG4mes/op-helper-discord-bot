@@ -740,7 +740,13 @@ async function answerTicketWithGemini(message, ticket) {
     }
     // Der Indikator verschwindet nach wenigen Sekunden. Daher wird er bei
     // längeren Gemini-Anfragen regelmäßig erneuert.
-    await message.channel.sendTyping().catch(() => null);
+    if (/^(?:ich (?:brauche|benötige) hilfe|kannst du mir helfen|hilfe)[.!?]*$/i.test(userText)) {
+  await message.reply({
+    content: 'Wobei brauchst du Hilfe? Beschreibe kurz, worum es geht.',
+    allowedMentions: { parse: [], repliedUser: false }
+  });
+  return;
+}
     typingRefresh = setInterval(() => message.channel.sendTyping().catch(() => null), 7_000);
     const recentMessages = await message.channel.messages.fetch({ limit: 20 });
     const oldHistory = [...recentMessages.values()]
