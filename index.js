@@ -324,6 +324,8 @@ const ticketTypes = {
   sonstiges: { label: 'Sonstiges', description: 'Anderes Anliegen', emoji: '💬' }
 };
 
+const applicationTypes = { supporter: 'Sup', tester: 'Tester', content: 'Content' };
+
 const opHelperKnowledge = `
 Verlässliches Wissen zur OP-Helper Mod:
 - OP-Helper ist eine clientseitige Fabric-Mod für Spieler auf opsucht.net.
@@ -339,13 +341,22 @@ Verlässliches Wissen zur OP-Helper Mod:
 `.trim();
 
 function ticketPanelComponents(ticketChannelId, supportRoleId, notificationChannelId) {
-  return new ActionRowBuilder().addComponents(
+  return new ActionRowBuilder().addComponents(Object.entries(ticketTypes).map(([type, details]) =>
     new ButtonBuilder()
-      .setCustomId(`ticket:create:${ticketChannelId}:${supportRoleId || 'none'}:${notificationChannelId}`)
-      .setLabel('Ticket erstellen')
-      .setEmoji('🎫')
+      .setCustomId(`ticket:create:${type}:${ticketChannelId}:${supportRoleId || 'none'}:${notificationChannelId}`)
+      .setLabel(details.label)
+      .setEmoji(details.emoji)
       .setStyle(ButtonStyle.Primary)
-  );
+  ));
+}
+
+function applicationButtons() {
+  return new ActionRowBuilder().addComponents(Object.entries(applicationTypes).map(([type, label]) =>
+    new ButtonBuilder()
+      .setCustomId(`application:choose:${type}`)
+      .setLabel(label)
+      .setStyle(ButtonStyle.Primary)
+  ));
 }
 
 function safeTicketText(value) {
@@ -835,13 +846,9 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.inGuild()) return;
 
-  if (interaction.isStringSelectMenu() && interaction.customId === 'application:type') {
-    const applicationTypes = {
-      content: 'Content',
-      tester: 'Tester',
-      supporter: 'Supporter'
-    };
-    const type = interaction.values[0];
+  if ((interaction.isStringSelectMenu() && interaction.customId === 'application:type') ||
+      (interaction.isButton() && interaction.customId.startsWith('application:choose:'))) {
+    const type = interaction.isButton() ? interaction.customId.split(':')[2] : interaction.values[0];
     if (!applicationTypes[type]) return interaction.reply({ content: 'Diese Bewerbungsart gibt es nicht.', ephemeral: true });
 
     const modal = new ModalBuilder()
@@ -861,7 +868,6 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   if (interaction.isModalSubmit() && interaction.customId.startsWith('application:submit:')) {
-    const applicationTypes = { content: 'Content', tester: 'Tester', supporter: 'Supporter' };
     const type = interaction.customId.split(':')[2];
     const channel = config.applicationChannelId
       ? await interaction.guild.channels.fetch(config.applicationChannelId).catch(() => null)
@@ -925,7 +931,14 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   if ((interaction.isStringSelectMenu() || interaction.isButton()) && interaction.customId.startsWith('ticket:create:')) {
-    const [, , ticketChannelId, supportRoleId = 'none', notificationChannelId = 'none'] = interaction.customId.split(':');
+    const parts = interaction.customId.split(':');
+    const hasTypeInCustomId = Boolean(ticketTypes[parts[2]]);
+    const ticketType = hasTypeInCustomId
+      ? parts[2]
+      : (interaction.isStringSelectMenu() ? (interaction.values[0] || 'support') : 'support');
+    const ticketChannelId = hasTypeInCustomId ? parts[3] : parts[2];
+    const supportRoleId = (hasTypeInCustomId ? parts[4] : parts[3]) || 'none';
+    const notificationChannelId = (hasTypeInCustomId ? parts[5] : parts[4]) || 'none';
     // Neue Tickets verwenden immer die Rolle "Team", sofern sie vorhanden ist.
     // Dadurch wird eine versehentlich beim Setup gewählte Serverleitungs-Rolle
     // nicht mehr angepingt.
@@ -935,7 +948,6 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!ticketChannel?.isTextBased() || !ticketChannel.threads) {
       return interaction.reply({ content: 'Der Ticket-Kanal wurde nicht gefunden.', ephemeral: true });
     }
-    const ticketType = interaction.isStringSelectMenu() ? (interaction.values[0] || 'support') : 'support';
     if (!ticketTypes[ticketType]) return interaction.reply({ content: 'Diese Ticket-Art gibt es nicht.', ephemeral: true });
     try {
       const activeThreads = await ticketChannel.threads.fetchActive();
@@ -1224,8 +1236,8 @@ client.on(Events.InteractionCreate, async interaction => {
           ReadMessageHistory: true
         }, 'Nachrichtenverlauf im Ticket-Startkanal anzeigen');
         await interaction.channel.send({
-          embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Tickets')
-            .setDescription('Klicke unten auf **Ticket erstellen**. Danach wird für dich ein privater Ticket-Thread erstellt.')],
+          embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Allgemeiner Support')
+            .setDescription('Erstelle ein Ticket für dein Anliegen, um gezielte Hilfe in verschiedenen Bereichen zu erhalten. Wähle unten den passenden Bereich aus; dein Ticket wird als privater Thread erstellt.')],
           components: [ticketPanelComponents(interaction.channel.id, supportRole?.id, notificationChannel.id)]
         });
         return interaction.reply({ content: 'Das Ticket-Auswahlmenü wurde erstellt.', ephemeral: true });
@@ -1363,19 +1375,11 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   if (interaction.commandName === 'bewerber') {
-    const menu = new StringSelectMenuBuilder()
-      .setCustomId('application:type')
-      .setPlaceholder('Wähle eine Bewerbungsart')
-      .addOptions(
-        { label: 'Content', value: 'content', description: 'Bei Content und Ideen für den Server helfen' },
-        { label: 'Tester', value: 'tester', description: 'Neue Funktionen und Inhalte testen' },
-        { label: 'Supporter', value: 'supporter', description: 'Mitgliedern bei Fragen helfen' }
-      );
     await interaction.channel.send({
       embeds: [new EmbedBuilder().setColor(0x5865F2)
-        .setTitle('Bewirb dich beim Serverteam')
-        .setDescription('Wähle unten **Content**, **Tester** oder **Supporter** aus und fülle das Bewerbungsformular aus.')],
-      components: [new ActionRowBuilder().addComponents(menu)]
+        .setTitle('Bewerbung')
+        .setDescription('Hier kannst du dich für verschiedene Rollen bewerben. Schau dir bitte vorab die Voraussetzungen für die jeweilige Rolle an. Wähle unten eine Rolle aus, um das Bewerbungsformular zu öffnen.')],
+      components: [applicationButtons()]
     });
     return interaction.reply({ content: 'Das Bewerbungsmenü wurde in diesem Kanal veröffentlicht.', ephemeral: true });
   }
