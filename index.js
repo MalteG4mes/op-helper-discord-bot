@@ -620,6 +620,24 @@ async function answerTicketWithGemini(message, ticket) {
   try {
     const userText = message.content.trim().slice(0, 1800);
     if (!userText) return;
+    const isUserReportRequest = /\b(?:user|nutzer|mitglied|spieler|jemanden)\b.{0,60}\b(?:melden|meldung|report|beschweren)\b|\b(?:melden|meldung|report|beschweren)\b.{0,60}\b(?:user|nutzer|mitglied|spieler|jemanden)\b/i.test(userText);
+    if (ticket.type !== 'meldung' && isUserReportRequest) {
+      const panelChannelId = message.channel.parentId;
+      const response = {
+        content: `Ja, du kannst den Spieler dem Serverteam melden. In diesem **${ticketTypes[ticket.type]?.label || 'Support'}**-Ticket wurde die Meldung aber noch nicht eingereicht. So erstellst du das passende Ticket:\n1. Klicke auf **Ticket-Auswahl öffnen**.\n2. Wähle im Panel den Button **Meldung**.\n3. Im neuen privaten Thread nennst du den Spielernamen, beschreibst kurz den Vorfall und wann er passiert ist. Screenshots oder andere Belege kannst du dort ebenfalls senden.\n\nDein aktuelles Ticket bleibt offen. Die Meldung wird erst im neuen **Meldung**-Ticket ans Team geschickt.`,
+        allowedMentions: { parse: [] }
+      };
+      if (panelChannelId) {
+        response.components = [new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setLabel('Ticket-Auswahl öffnen')
+            .setStyle(ButtonStyle.Link)
+            .setURL(`https://discord.com/channels/${message.guild.id}/${panelChannelId}`)
+        )];
+      }
+      await message.reply(response);
+      return;
+    }
     const pendingConfirmation = ticketSummaryConfirmations.get(message.channel.id);
     if (pendingConfirmation) {
       const answer = userText.toLowerCase().replace(/[.!?]/g, '').trim();
@@ -1416,4 +1434,3 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
-00
