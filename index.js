@@ -644,7 +644,10 @@ async function answerTicketWithGemini(message, ticket) {
         });
         return;
       }
-      if (['nein', 'nee', 'nö', 'no', 'nope'].includes(answer)) {
+      if (
+  ['nein', 'nee', 'nö', 'no', 'nope'].includes(answer) ||
+  /^das\s+war(?:['’‘]?s|\s+es)(?:[\s,]+(?:danke(?: dir)?|vielen dank))?[.!?]*$/i.test(userText)
+) {
         ticketFollowupPendingClosures.delete(message.channel.id);
         const requested = await requestTicketClose(
           message.channel,
