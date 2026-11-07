@@ -1021,7 +1021,7 @@ client.on(Events.InteractionCreate, async interaction => {
       });
       await ticket.members.add(interaction.user.id);
       await ticket.send({
-        content: `${interaction.user}${ticketTeamRoleId !== 'none' ? ` <@&${ticketTeamRoleId}>` : ''}`,
+        content: `${interaction.user}`,
         embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(`${ticketNumberLabel({ ticketId })} · ${ticketTypes[ticketType].label}`)
           .setDescription(config.geminiApiKey
             ? `Hallo ${interaction.user}! Ich bin die Ticket-KI. Bitte nenne mir dein Anliegen möglichst genau, dann helfe ich dir bei der Einordnung. Ein Teammitglied kann jederzeit übernehmen. Schreibe **„bitte weiterleiten“**, wenn du direkt an das Support-Team übergeben werden möchtest.\n\nDas Support-Team kann bei Bedarf einen Schließungsvorschlag senden. Du entscheidest dann, ob das Ticket geschlossen wird.`
@@ -1030,9 +1030,7 @@ client.on(Events.InteractionCreate, async interaction => {
         components: [new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(`ticket:close:${ticketTeamRoleId}:${notificationChannelId}`).setLabel('Schließung vorschlagen').setEmoji('🔒').setStyle(ButtonStyle.Primary)
         )],
-        allowedMentions: ticketTeamRoleId !== 'none'
-          ? { roles: [ticketTeamRoleId], users: [interaction.user.id] }
-          : { users: [interaction.user.id] }
+        allowedMentions: { users: [interaction.user.id], roles: [] }
       });
       const teamNotificationChannelId = config.ticketNotificationChannelId || notificationChannelId;
       if (teamNotificationChannelId !== 'none') {
