@@ -31,7 +31,10 @@ const streamers = [
   { login: 'ccatched', displayName: 'ccatched' },
   { login: 'simontheking799', displayName: 'Simontheking799' },
   { login: 'tsheyn', displayName: 'Tsheyn' },
-  { login: 'champion336666', displayName: 'Champion336666' }
+  { login: 'champion336666', displayName: 'Champion336666' },
+  { login: 'Gemboss01', displayName: 'dani_derallerechte' },
+  { login: 'Sonata', displayName: 'sonata_1998' },
+  { login: 'dfd1_dragoon', displayName: 'dfd1_dragoon' }
 ].map(streamer => ({ ...streamer, roleName: `Stream-Ping: ${streamer.displayName}` }));
 
 const config = {
